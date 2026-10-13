@@ -34,6 +34,15 @@ Expected behavior:
 - read data
 - should not create/update server state as its intended semantic effect
 
+### Practical example — GET: Read all users
+
+```js
+const response = await fetch("http://localhost:3000/users");
+console.log(await response.json());
+```
+
+GET requests read information without intentionally changing server data.
+
 ---
 
 ## 2. POST
@@ -60,6 +69,20 @@ Possible response:
 201 Created
 ```
 
+### Practical example — POST: Create a user
+
+```js
+const response = await fetch("http://localhost:3000/users", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ name: "Vikash", city: "Patna" }),
+});
+console.log(response.status); // 201
+console.log(await response.json());
+```
+
+POST creates a new user. The raw Node.js server must read request-body chunks manually.
+
 ---
 
 ## 3. PUT
@@ -75,6 +98,19 @@ PUT /users/123
 ```
 
 Body may contain the full desired representation.
+
+### Practical example — PUT: Replace a user
+
+```js
+const response = await fetch("http://localhost:3000/users/1", {
+  method: "PUT",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ name: "Vikash Kumar", city: "Pune" }),
+});
+console.log(await response.json());
+```
+
+PUT replaces the whole editable user representation. Include every field to retain.
 
 ---
 
@@ -96,6 +132,19 @@ Body:
 }
 ```
 
+### Practical example — PATCH: Update a single field
+
+```js
+const response = await fetch("http://localhost:3000/users/1", {
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ city: "Bengaluru" }),
+});
+console.log(await response.json());
+```
+
+PATCH modifies only the provided fields in this demo; the name stays unchanged.
+
 ---
 
 ## 5. DELETE
@@ -110,6 +159,18 @@ Possible responses:
 - 204 No Content
 - 200 with result body
 
+### Practical example — DELETE: Remove a user
+
+```js
+const response = await fetch("http://localhost:3000/users/1", {
+  method: "DELETE",
+});
+console.log(response.status); // 204 if deleted
+// No response.json(): 204 responses have no body.
+```
+
+DELETE removes the user. A repeated request can return 404 even though DELETE is idempotent in its intended effect.
+
 ---
 
 ## 6. HEAD
@@ -121,6 +182,18 @@ Useful for:
 - existence checks
 - content length
 - caching logic
+
+### Practical example — HEAD: Read response headers
+
+```js
+const response = await fetch("http://localhost:3000/users", {
+  method: "HEAD",
+});
+console.log(response.status); // 200
+console.log(response.headers.get("content-type"));
+```
+
+HEAD is similar to GET but has no response body.
 
 ---
 
@@ -135,6 +208,18 @@ Example:
 ```http
 OPTIONS /users
 ```
+
+### Practical example — OPTIONS: Read allowed methods
+
+```js
+const response = await fetch("http://localhost:3000/users", {
+  method: "OPTIONS",
+});
+console.log(response.status); // 204
+console.log(response.headers.get("allow"));
+```
+
+The Allow header describes supported methods. CORS preflight requires additional Access-Control-Allow-* headers.
 
 ---
 
@@ -266,21 +351,134 @@ Only city changes.
 
 ---
 
-## 13. Method handling in raw Node.js
+## 13. Method handling in raw Node.js ⭐⭐⭐⭐⭐
+
+The examples above use this **complete runnable server without Express**. Save as `server.mjs` and run `node server.mjs` (Node.js 18+). Users are stored in memory, so data resets when you restart the server.
 
 ```js
-if (
-  req.method === "GET"
-) {
-  // ...
+import http from "node:http";
+
+// In-memory data: restart server to reset.
+const users = new Map([[1, { id: 1, name: "Vikash", city: "Patna" }]]);
+let nextId = 2;
+
+function json(res, status, data) {
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(data));
 }
 
-if (
-  req.method === "POST"
-) {
-  // ...
+async function readBody(req) {
+  let body = "";
+  for await (const chunk of req) body += chunk;
+  return JSON.parse(body);
 }
+
+const server = http.createServer(async (req, res) => {
+  const { pathname } = new URL(req.url, "http://localhost");
+  const method = req.method;
+
+  if (pathname === "/users") {
+    if (method === "GET") return json(res, 200, [...users.values()]);
+    if (method === "HEAD") {
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      return res.end();
+    }
+    if (method === "OPTIONS") {
+      res.writeHead(204, { Allow: "GET, HEAD, POST, OPTIONS" });
+      return res.end();
+    }
+    if (method === "POST") {
+      try {
+        const input = await readBody(req);
+        if (!input || typeof input.name !== "string" ||
+            typeof input.city !== "string") {
+          return json(res, 400, { error: "name and city must be strings" });
+        }
+        const user = { id: nextId++, name: input.name, city: input.city };
+        users.set(user.id, user);
+        res.setHeader("Location", `/users/${user.id}`);
+        return json(res, 201, user);
+      } catch {
+        return json(res, 400, { error: "Invalid JSON body" });
+      }
+    }
+    res.setHeader("Allow", "GET, HEAD, POST, OPTIONS");
+    return json(res, 405, { error: "Method not allowed" });
+  }
+
+  const match = /^\/users\/(\d+)$/.exec(pathname);
+  if (match) {
+    const id = Number(match[1]);
+    const existing = users.get(id);
+    if (method === "OPTIONS") {
+      res.writeHead(204, { Allow: "GET, HEAD, PUT, PATCH, DELETE, OPTIONS" });
+      return res.end();
+    }
+    if (method === "GET") {
+      return existing ? json(res, 200, existing) : json(res, 404, { error: "Not found" });
+    }
+    if (method === "HEAD") {
+      res.writeHead(existing ? 200 : 404);
+      return res.end();
+    }
+    if (method === "DELETE") {
+      if (!existing) return json(res, 404, { error: "Not found" });
+      users.delete(id);
+      res.writeHead(204);
+      return res.end();
+    }
+    if (method === "PUT" || method === "PATCH") {
+      if (!existing) return json(res, 404, { error: "Not found" });
+      try {
+        const input = await readBody(req);
+        if (!input || typeof input !== "object" || Array.isArray(input) ||
+            !Object.keys(input).every(k => ["name", "city"].includes(k))) {
+          return json(res, 400, { error: "Invalid fields" });
+        }
+        if ((method === "PUT" &&
+             (typeof input.name !== "string" || typeof input.city !== "string")) ||
+            (method === "PATCH" &&
+             Object.values(input).some(v => typeof v !== "string"))) {
+          return json(res, 400, { error: "Invalid user data" });
+        }
+        const updated = method === "PUT"
+          ? { id, name: input.name, city: input.city }
+          : { ...existing, ...input };
+        users.set(id, updated);
+        return json(res, 200, updated);
+      } catch {
+        return json(res, 400, { error: "Invalid JSON body" });
+      }
+    }
+    res.setHeader("Allow", "GET, HEAD, PUT, PATCH, DELETE, OPTIONS");
+    return json(res, 405, { error: "Method not allowed" });
+  }
+
+  return json(res, 404, { error: "Route not found" });
+});
+
+server.listen(3000, () => {
+  console.log("Server running at http://localhost:3000");
+});
 ```
+
+### How to test
+
+Run the server first, then try the `fetch()` examples in Sections 1–7 using Node.js or your API client. User `1` already exists, so PUT, PATCH, and DELETE can target `/users/1`.
+
+POST with `curl`:
+
+```bash
+curl -i -X POST http://localhost:3000/users \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Rahul","city":"Pune"}'
+```
+
+Expected: `201 Created`, JSON containing an `id`, and a `Location` header.
+
+**How it works:** `req.method` identifies the method; `url.pathname` identifies the route; `for await (const chunk of req)` reads request-body chunks; `JSON.parse()` converts body text to an object; `res.end()` completes the response.
+
+**For learning only:** A production server additionally needs body-size limits, stronger validation, persistence, authentication and robust error handling. `OPTIONS` here demonstrates `Allow`, not a complete CORS preflight configuration.
 
 ---
 
