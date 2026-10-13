@@ -452,6 +452,226 @@ res.writeHead(
 
 ---
 
+## 29.1 Practical HTTP Method Examples — Status Codes and Headers ⭐⭐⭐⭐⭐
+
+HTTP methods explain **what** a client wants to do. Status codes and headers explain **what happened** and **how to interpret the response**.
+
+Use this one **raw Node.js HTTP server** to test all seven methods. The users are stored in memory, so a server restart resets the data.
+
+```js
+import http from "node:http";
+
+const users = new Map([
+  [1, { id: 1, name: "Vikash", city: "Patna" }],
+]);
+let nextId = 2;
+
+function sendJson(res, status, data, headers = {}) {
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    ...headers,
+  });
+  res.end(JSON.stringify(data));
+}
+
+async function readJson(req) {
+  let body = "";
+  for await (const chunk of req) body += chunk;
+  return JSON.parse(body);
+}
+
+const server = http.createServer(async (req, res) => {
+  const { pathname } = new URL(req.url, "http://localhost");
+  const method = req.method;
+
+  if (pathname === "/users") {
+    // GET: read all users → 200 OK + JSON Content-Type
+    if (method === "GET") {
+      return sendJson(res, 200, [...users.values()]);
+    }
+
+    // HEAD: resource metadata, no body → 200 OK
+    if (method === "HEAD") {
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
+      return res.end();
+    }
+
+    // OPTIONS: discover supported methods → 204 + Allow header
+    if (method === "OPTIONS") {
+      res.writeHead(204, {
+        Allow: "GET, HEAD, POST, OPTIONS",
+      });
+      return res.end();
+    }
+
+    // POST: create resource → 201 Created + Location header
+    if (method === "POST") {
+      try {
+        const input = await readJson(req);
+        if (!input || typeof input.name !== "string" ||
+            typeof input.city !== "string") {
+          return sendJson(res, 422, { error: "name and city required" });
+        }
+        const user = {
+          id: nextId++,
+          name: input.name,
+          city: input.city,
+        };
+        users.set(user.id, user);
+        return sendJson(res, 201, user, {
+          Location: `/users/${user.id}`,
+        });
+      } catch {
+        return sendJson(res, 400, { error: "Malformed JSON body" });
+      }
+    }
+
+    res.setHeader("Allow", "GET, HEAD, POST, OPTIONS");
+    return sendJson(res, 405, { error: "Method not allowed" });
+  }
+
+  const match = /^\/users\/(\d+)$/.exec(pathname);
+  if (match) {
+    const id = Number(match[1]);
+    const existing = users.get(id);
+
+    if (method === "PUT" || method === "PATCH") {
+      if (!existing) return sendJson(res, 404, { error: "User not found" });
+      try {
+        const input = await readJson(req);
+        if (!input || typeof input !== "object" || Array.isArray(input) ||
+            !Object.keys(input).every((key) => ["name", "city"].includes(key))) {
+          return sendJson(res, 422, { error: "Invalid fields" });
+        }
+        if ((method === "PUT" &&
+             (typeof input.name !== "string" || typeof input.city !== "string")) ||
+            (method === "PATCH" &&
+             Object.values(input).some((value) => typeof value !== "string"))) {
+          return sendJson(res, 422, { error: "Invalid user data" });
+        }
+
+        // PUT: replace full editable user representation → 200 OK
+        // PATCH: change only supplied fields → 200 OK
+        const updated = method === "PUT"
+          ? { id, name: input.name, city: input.city }
+          : { ...existing, ...input };
+        users.set(id, updated);
+        return sendJson(res, 200, updated);
+      } catch {
+        return sendJson(res, 400, { error: "Malformed JSON body" });
+      }
+    }
+
+    // DELETE: remove resource → 204 No Content (no response body)
+    if (method === "DELETE") {
+      if (!existing) return sendJson(res, 404, { error: "User not found" });
+      users.delete(id);
+      res.writeHead(204);
+      return res.end();
+    }
+
+    res.setHeader("Allow", "PUT, PATCH, DELETE");
+    return sendJson(res, 405, { error: "Method not allowed" });
+  }
+
+  return sendJson(res, 404, { error: "Route not found" });
+});
+
+server.listen(3000, () => {
+  console.log("API running at http://localhost:3000");
+});
+```
+
+**Run:** Save as `server.mjs`, then execute `node server.mjs`.
+
+### Test each method using `curl`
+
+These are individual examples. Start with user `1`; run DELETE last because it removes that user.
+
+**1. GET — `200 OK`:** Fetch users with a JSON `Content-Type` response.
+
+```bash
+curl -i http://localhost:3000/users
+```
+
+Expected: `200 OK`, `Content-Type: application/json; charset=utf-8`, and the user array as JSON.
+
+**2. POST — `201 Created`:** Create another user.
+
+```bash
+curl -i -X POST http://localhost:3000/users \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Rahul","city":"Pune"}'
+```
+
+Expected: `201 Created`, `Location: /users/2`, and the newly created user as JSON. The request `Content-Type` tells the server the body format; the response `Location` identifies the new resource.
+
+**3. PUT — `200 OK`:** Replace the editable data of user `1`.
+
+```bash
+curl -i -X PUT http://localhost:3000/users/1 \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Vikash Kumar","city":"Bengaluru"}'
+```
+
+Expected: `200 OK`, JSON containing both updated fields. This example uses full-replacement semantics.
+
+**4. PATCH — `200 OK`:** Change only the city; keep the name.
+
+```bash
+curl -i -X PATCH http://localhost:3000/users/1 \
+  -H "Content-Type: application/json" \
+  -d '{"city":"Hyderabad"}'
+```
+
+Expected: `200 OK`; the returned user still has `name: "Vikash Kumar"` but the city is now `Hyderabad`.
+
+**5. DELETE — `204 No Content`:** Remove user `1`.
+
+```bash
+curl -i -X DELETE http://localhost:3000/users/1
+```
+
+Expected: `204 No Content` and **no JSON body**. Calling `response.json()` on a 204 fetch response will fail because there is nothing to parse.
+
+**6. HEAD — `200 OK`:** Retrieve only response metadata.
+
+```bash
+curl -I http://localhost:3000/users
+```
+
+Expected: `200 OK` and `Content-Type` / `Cache-Control` headers, but **no response body**.
+
+**7. OPTIONS — `204 No Content`:** Ask what methods the collection route supports.
+
+```bash
+curl -i -X OPTIONS http://localhost:3000/users
+```
+
+Expected: `204 No Content` with `Allow: GET, HEAD, POST, OPTIONS`.
+
+### Summary — Which method, status and header?
+
+| Method | Example path | Typical response | Important header |
+| --- | --- | --- | --- |
+| GET | `/users` | `200 OK` + JSON | `Content-Type` |
+| POST | `/users` | `201 Created` + JSON | `Location` |
+| PUT | `/users/1` | `200 OK` + updated JSON | `Content-Type` |
+| PATCH | `/users/1` | `200 OK` + changed JSON | `Content-Type` |
+| DELETE | `/users/1` | `204 No Content` | No body required |
+| HEAD | `/users` | `200 OK` (headers only) | `Content-Type` |
+| OPTIONS | `/users` | `204 No Content` | `Allow` |
+
+**Remember:** Status codes depend on the *outcome*, not just the method. For example, POST may return `400` for malformed JSON, `422` for invalid user data, or `405` on an unsupported route. This OPTIONS example illustrates `Allow`; it is **not** a complete browser CORS-preflight handler.
+
+**Learning scope:** This is an in-memory demo, not production-ready. Real servers need request body limits, authentication, persistence, more robust error handling and stricter validation.
+
+---
+
 ## 30. Status-code decision mental model
 
 Ask:
