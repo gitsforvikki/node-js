@@ -233,19 +233,183 @@ res.end(
 
 ---
 
-## 9. res.write() vs res.end()
+## 9. `res.write()`, `res.end()`, `res.send()` and `res.json()` ⭐⭐⭐⭐⭐
+
+These methods all relate to sending an HTTP response, but **not all of them belong to Node.js itself**.
+
+> **Key difference:** `res.write()` and `res.end()` come from Node's built-in `node:http` response object. `res.send()` and `res.json()` are conveniences added by **Express.js**.
+
+### 9.1 `res.end()` — Send final data and finish the response
 
 ```js
-res.write("part 1");
-res.write("part 2");
-res.end("done");
+import http from "node:http";
+
+const server = http.createServer((req, res) => {
+  res.end("Hello Node.js");
+});
+
+server.listen(3000);
 ```
 
-`write()` sends body chunks.
+When the browser requests `http://localhost:3000`, `res.end("Hello Node.js")` sends the text and **marks the response as complete**.
 
-`end()` finishes the response.
+```js
+res.end("Hello"); // Sends "Hello" and finishes
+res.end("World"); // ❌ Error: response has already ended
+```
 
-You must eventually end the response.
+You can also use `res.end()` with no argument after previously writing body data.
+
+### 9.2 `res.write()` — Write chunks without finishing
+
+```js
+import http from "node:http";
+
+const server = http.createServer((req, res) => {
+  res.write("Hello ");
+  res.write("Vikash ");
+  res.write("Welcome to Node.js");
+
+  res.end();
+});
+
+server.listen(3000);
+```
+
+The response body contains:
+
+```text
+Hello Vikash Welcome to Node.js
+```
+
+Flow:
+
+```text
+res.write("Hello ")       → write first body chunk
+res.write("Vikash ")      → write another body chunk
+res.write("Welcome ...")  → write another body chunk
+res.end()                 → finish HTTP response
+```
+
+`res.write()` **does not finish** the response. Use it for incremental output or streaming, and eventually call `res.end()`. Writes can be buffered by Node, proxies, or clients; calling `write()` does not guarantee each chunk appears in the browser immediately.
+
+### 9.3 `res.send()` — An Express method, not a native HTTP method
+
+Express example:
+
+```js
+import express from "express";
+
+const app = express();
+
+app.get("/", (req, res) => {
+  res.send("Hello Express");
+});
+
+app.listen(3000);
+```
+
+`res.send()` sends the response, handles relevant response headers, and **finishes** it automatically. You do not need to call `res.end()` after it.
+
+In raw `node:http`, however:
+
+```js
+import http from "node:http";
+
+http.createServer((req, res) => {
+  res.send("Hello"); // ❌ TypeError: res.send is not a function
+}).listen(3000);
+```
+
+Why? Node's `http.ServerResponse` has no `send()` method. Express extends the response interface with helpers.
+
+### 9.4 `res.json()` — Convenient JSON responses in Express
+
+```js
+app.get("/user", (req, res) => {
+  res.status(200).json({
+    name: "Vikash",
+    role: "Developer",
+  });
+});
+```
+
+Express serializes the object to JSON, sets an appropriate JSON content type, and ends the response. `res.send({ name: "Vikash" })` also sends JSON in Express, but `res.json()` makes the API's intent clearer.
+
+### 9.5 Raw Node.js vs Express — Same JSON response
+
+**Raw Node.js HTTP server:**
+
+```js
+import http from "node:http";
+
+http.createServer((req, res) => {
+  res.setHeader("Content-Type", "application/json");
+
+  res.end(JSON.stringify({
+    name: "Vikash",
+  }));
+}).listen(3000);
+```
+
+**Express server:**
+
+```js
+import express from "express";
+
+const app = express();
+
+app.get("/", (req, res) => {
+  res.json({ name: "Vikash" });
+});
+
+app.listen(3000);
+```
+
+Raw Node.js requires you to serialize the object and set the header yourself; Express provides a higher-level helper.
+
+### 9.6 What about `res.writeHead()`?
+
+In raw Node.js, `writeHead()` sets the response status code and headers:
+
+```js
+res.writeHead(200, {
+  "Content-Type": "text/html",
+});
+
+res.end("<h1>Hello Vikash</h1>");
+```
+
+`writeHead()` **does not end** the response. You must still send/end it.
+
+### 9.7 Comparison and when to use each
+
+| Method | Built-in `node:http` | Express | Ends response? |
+| --- | --- | --- | --- |
+| `res.write()` | ✅ | ✅ | No |
+| `res.end()` | ✅ | ✅ | Yes |
+| `res.send()` | ❌ | ✅ | Yes |
+| `res.json()` | ❌ | ✅ | Yes |
+| `res.writeHead()` | ✅ | ✅ | No |
+
+Express builds on Node's response object, so the low-level Node methods remain available.
+
+**Practical choice:**
+
+- **Simple text response with raw Node:** `res.end("Hello")`.
+- **Multiple chunks / streaming with raw Node:** `res.write(chunk)` followed by `res.end()`.
+- **Text or HTML with Express:** `res.send(content)`.
+- **JSON APIs with Express:** `res.json(data)`.
+- **Empty response with Express:** `res.status(204).end()`.
+
+**Interview mental model:**
+
+```text
+res.write() → Add body data; keep the response open.
+res.end()   → Finish the response (optionally send final data).
+res.send()  → Express sends data and finishes automatically.
+res.json()  → Express serializes JSON and finishes automatically.
+```
 
 ---
 
