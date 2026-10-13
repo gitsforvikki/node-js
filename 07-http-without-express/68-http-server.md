@@ -152,34 +152,129 @@ That is one reason routing frameworks exist.
 
 ## 6. Parse URL properly
 
-Do not rely only on raw `req.url`.
+When a request comes to your Node.js server, `req.url` typically contains a **path + query string**, not a complete absolute URL.
 
-Example:
+For example, when the browser requests:
+
+```http
+GET /users?page=2&limit=10
+```
+
+Node.js gives you:
 
 ```js
-const url =
-  new URL(
-    req.url,
-    `http://${req.headers.host}`
-  );
+console.log(req.url);
+// "/users?page=2&limit=10"
+```
 
-console.log(
-  url.pathname
+### 6.1 What does `new URL(req.url, "http://localhost")` do?
+
+```js
+const url = new URL(req.url, "http://localhost");
+```
+
+Break it into three parts:
+
+1. **`req.url`** — The incoming request target, such as `/users?page=2&limit=10`.
+2. **`"http://localhost"`** — A base URL, allowing JavaScript to interpret that relative path.
+3. **`new URL(...)`** — The built-in JavaScript URL constructor, which parses the result into an object with useful properties.
+
+Conceptually:
+
+```text
+req.url: "/users?page=2&limit=10"
+                +
+base:    "http://localhost"
+                ↓
+http://localhost/users?page=2&limit=10
+                ↓
+Parsed URL object
+```
+
+You can now access each part:
+
+```js
+const url = new URL(
+  "/users?page=2&limit=10",
+  "http://localhost"
 );
+
+console.log(url.pathname);                // "/users"
+console.log(url.search);                  // "?page=2&limit=10"
+console.log(url.searchParams.get("page")); // "2"
+console.log(url.searchParams.get("limit")); // "10"
+console.log(url.origin);                  // "http://localhost"
 ```
 
-Now:
+**Why supply a base URL?** Because the path by itself is relative:
 
-```text
-/users?page=2
+```js
+new URL("/users?page=2"); // ❌ TypeError: Invalid URL
+
+new URL("/users?page=2", "http://localhost"); // ✅
 ```
 
-becomes:
+**Important:** The base URL here is used **only for parsing**. It does not send a network request or bind the server to localhost. For routing against `pathname`, a fixed base works for normal origin-form request paths. The parsed `origin` will reflect that base, not necessarily the public address used by the client.
 
-```text
-pathname: /users
-page: 2
+### 6.2 Use `pathname` for routing
+
+Consider:
+
+| Incoming request | `req.url` | `url.pathname` |
+| --- | --- | --- |
+| `/` | `/` | `/` |
+| `/users` | `/users` | `/users` |
+| `/users?page=2` | `/users?page=2` | `/users` |
+| `/products?id=10` | `/products?id=10` | `/products` |
+
+If you compare `req.url === "/users"`, then `/users?page=2` will **not** match. Using `url.pathname` avoids that problem.
+
+### 6.3 Practical example: a query parameter
+
+```js
+import http from "node:http";
+
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url, "http://localhost");
+
+  if (req.method === "GET" && url.pathname === "/users") {
+    const page = url.searchParams.get("page") ?? "1";
+
+    res.setHeader("Content-Type", "application/json");
+
+    return res.end(JSON.stringify({
+      message: "Users fetched",
+      page,
+    }));
+  }
+
+  res.statusCode = 404;
+  res.end("Not Found");
+});
+
+server.listen(3000);
 ```
+
+Open: `http://localhost:3000/users?page=2`
+
+Response:
+
+```json
+{
+  "message": "Users fetched",
+  "page": "2"
+}
+```
+
+Notice that `searchParams.get()` returns a **string** (or `null` if missing). For a number:
+
+```js
+const page = Number(url.searchParams.get("page") ?? 1);
+```
+
+Validate the converted value when it affects pagination or database queries.
+
+**Mental model:** `new URL(req.url, "http://localhost")` makes it easy to read the incoming request's **pathname, search string, and query parameters** separately.
 
 ---
 
