@@ -231,28 +231,158 @@ Typical global middleware:
 
 ## 8. Route-level middleware
 
+Route-level middleware is attached to a **specific endpoint**. It runs only when that route matches.
+
+Suppose anyone may list or create users, but deleting a user requires authentication.
+
+### Example: Protect only DELETE
+
 ```js
-app.post(
-  "/orders",
-  authenticate,
-  validateOrder,
-  createOrder
-);
+// middlewares/auth.middleware.js
+export function authenticate(req, res, next) {
+  const authorization = req.headers.authorization;
+
+  if (!authorization) {
+    return res.status(401).json({
+      message: "Authorization required",
+    });
+  }
+
+  // Demo only: a header existing does NOT mean the user is authenticated.
+  // In production, verify the token and check permissions.
+  next();
+}
 ```
 
-Only this route receives those middleware functions.
+```js
+// routes/user.routes.js
+import { Router } from "express";
+import { authenticate } from "../middlewares/auth.middleware.js";
+import { getUsers, createUser, deleteUser } from "../controllers/user.controller.js";
+
+const router = Router();
+
+router.get("/", getUsers);                          // Public
+router.post("/", createUser);                       // Public
+router.delete("/:id", authenticate, deleteUser);     // Protected
+
+export default router;
+```
+
+Assuming `app.use("/api/users", router)`, a `DELETE /api/users/1` request flows through:
+
+```text
+DELETE /api/users/1
+       |
+       v
+authenticate(req, res, next)
+       |
+       +-- missing header --> 401 response (stops here)
+       |
+       +-- header present --> next()
+                              |
+                              v
+                           deleteUser()
+```
+
+The `GET` and `POST` routes above **do not run** `authenticate`. A route can also have several middleware functions, called in order:
+
+```js
+router.post("/", authenticate, validateUser, createUser);
+```
+
+Here `authenticate` runs first, `validateUser` next, and then the controller—provided each middleware calls `next()`.
+
+**Use route-level middleware when one operation needs special validation, authorization, or rate limits.**
 
 ---
 
 ## 9. Router-level middleware
 
+Router-level middleware is registered on an Express `Router` with `router.use()`. It can run for **multiple routes defined after it**, rather than being repeated on each endpoint.
+
+### Example: Authenticate all user endpoints
+
+Reuse the `authenticate` middleware defined in Section 8.
+
 ```js
-router.use(
-  authenticate
-);
+// routes/user.routes.js
+import { Router } from "express";
+import { authenticate } from "../middlewares/auth.middleware.js";
+import {
+  getUsers,
+  createUser,
+  updateUser,
+  deleteUser,
+} from "../controllers/user.controller.js";
+
+const router = Router();
+
+// Shared middleware: applies to matching requests that reach this router.
+router.use(authenticate);
+
+router.get("/", getUsers);
+router.post("/", createUser);
+router.put("/:id", updateUser);
+router.delete("/:id", deleteUser);
+
+export default router;
 ```
 
-Every route registered afterward in that router can inherit it.
+```js
+// app.js
+app.use("/api/users", router);
+```
+
+Now all four endpoints go through the **same** authentication middleware:
+
+```text
+GET    /api/users ----+
+POST   /api/users ----+
+PUT    /api/users/:id +--> authenticate() --> controller
+DELETE /api/users/:id +
+```
+
+If the authentication middleware returns `401`, no controller runs. If it calls `next()`, Express continues matching routes in order.
+
+### Combine router-level and route-level middleware
+
+A common production pattern is **authenticate all routes**, but require **admin permission only for deletion**:
+
+```js
+router.use(authenticate);                    // Router-level
+router.get("/", getUsers);
+router.post("/", createUser);
+router.delete("/:id", requireAdmin, deleteUser); // Route-level
+```
+
+```text
+DELETE /api/users/1
+       |
+       v
+authenticate()  [router-level]
+       |
+       v
+requireAdmin()  [route-level]
+       |
+       v
+deleteUser()    [controller]
+```
+
+`requireAdmin` must check the role of the **verified** user, not trust a role supplied directly by the client.
+
+### Key differences
+
+| Point | Route-level | Router-level |
+|---|---|---|
+| Registration | `router.delete("/:id", middleware, handler)` | `router.use(middleware)` |
+| Scope | One route definition | Matching requests reaching the router after registration |
+| Use case | DELETE-only admin check | Shared authentication or logging |
+| Multiple middleware | Yes | Yes |
+
+**Important:** Registration order matters. If a route handles the request before `router.use(authenticate)`, that earlier route is not retroactively protected. Router-level middleware may also be restricted to a path, such as `router.use("/admin", authenticate)`.
+
+**Interview takeaway:** Route-level middleware targets an individual endpoint, while `router.use()` shares middleware across a router's matching requests. Both participate in Express's ordered middleware pipeline.
 
 This is covered in more depth in Lesson 86.
 
