@@ -219,6 +219,170 @@ src/
 └── utils/
 ```
 
+### How routes, controllers, services, and repositories work together
+
+Consider a **User Management API** that accepts `POST /api/users`:
+
+```json
+{
+  "name": "Vikash",
+  "email": "vikash@gmail.com"
+}
+```
+
+Each layer has a separate responsibility:
+
+| Layer | Main responsibility | Example |
+|---|---|---|
+| Route | Choose which controller handles an HTTP method and URL | `router.post("/", createUser)` |
+| Controller | Read the HTTP request, call a service, and send the response | `req.body`, `res.status(201).json(...)` |
+| Service | Apply business rules and coordinate operations | Require name/email; reject existing email |
+| Repository | Run database operations | `User.findOne()`, `User.create()` |
+
+```text
+Client: POST /api/users
+         |
+         v
+app.js: mounts /api/users
+         |
+         v
+user.routes.js: POST "/" -> createUser
+         |
+         v
+user.controller.js: read req.body, call service
+         |
+         v
+user.service.js: validate input, check duplicate
+         |
+         v
+user.repository.js: query / insert database
+         |
+         v
+Database
+```
+
+The result flows back **repository → service → controller → client**. The route selects the controller; it does not run the business logic itself.
+
+#### Step 1 — `routes/user.routes.js`
+
+```js
+import { Router } from "express";
+import { createUser } from "../controllers/user.controller.js";
+
+const router = Router();
+
+router.post("/", createUser);
+
+export default router;
+```
+
+The router maps `POST /` to the `createUser` controller. Because `app.js` mounts it under `/api/users`, the full endpoint is `POST /api/users`.
+
+#### Step 2 — `controllers/user.controller.js`
+
+```js
+import { createUserService } from "../services/user.service.js";
+
+export async function createUser(req, res, next) {
+  try {
+    const user = await createUserService(req.body);
+
+    return res.status(201).json({
+      success: true,
+      message: "User created successfully",
+      data: user,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+```
+
+The controller knows about **HTTP** (`req`, `res`, status `201`), but delegates business rules and database access to other layers. `next(error)` forwards errors to the error middleware (Section 12).
+
+#### Step 3 — `services/user.service.js`
+
+```js
+import {
+  findUserByEmail,
+  saveUser,
+} from "../repositories/user.repository.js";
+
+export async function createUserService(data) {
+  const name = typeof data?.name === "string" ? data.name.trim() : "";
+  const email = typeof data?.email === "string"
+    ? data.email.trim().toLowerCase()
+    : "";
+
+  if (!name || !email) {
+    const error = new Error("Name and email are required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const existingUser = await findUserByEmail(email);
+
+  if (existingUser) {
+    const error = new Error("Email already registered");
+    error.statusCode = 409;
+    throw error;
+  }
+
+  return saveUser({ name, email });
+}
+```
+
+The service handles **business rules** without depending on Express `req` or `res`. This makes the same service reusable from a CLI command, another controller, or a background job. A real application should also validate email format and enforce a **unique database index** to avoid duplicate users under concurrent requests.
+
+#### Step 4 — `repositories/user.repository.js`
+
+This example uses Mongoose (assume the `User` model is defined in `models/user.model.js` and the database connection is initialized during startup):
+
+```js
+import User from "../models/user.model.js";
+
+export function findUserByEmail(email) {
+  return User.findOne({ email });
+}
+
+export function saveUser(data) {
+  return User.create(data);
+}
+```
+
+The repository owns **database access**, not HTTP responses or business decisions.
+
+#### Step 5 — Connect the router in `app.js`
+
+```js
+import express from "express";
+import userRoutes from "./routes/user.routes.js";
+
+export const app = express();
+
+app.use(express.json({ limit: "1mb" }));
+app.use("/api/users", userRoutes);
+
+// Register 404 and error middleware after the routes.
+```
+
+`server.js` imports `app` and starts listening as shown in Section 3; for database-backed routes, connect the database **before** `listen()` (Section 14).
+
+#### Why not put everything in the controller?
+
+You *could* make database queries directly in an Express route, but the same validation and duplicate-checking rules may then get repeated across API routes, admin features, and background jobs. Separation makes these rules easier to reuse and unit-test.
+
+**Memory trick:**
+
+- **Route:** Where does the request go?
+- **Controller:** What HTTP input arrived, and what HTTP response goes out?
+- **Service:** What rules must the application follow?
+- **Repository:** How does it read/write data?
+
+**Interview note:** Not every small CRUD app needs four layers. Routes + controllers + services may be sufficient; add repositories when separating persistence logic meaningfully improves the codebase.
+
+**Production note:** The illustrative service throws errors with `statusCode`. The generic error handler in Section 12 always returns 500; update that handler to honor validated operational status codes (such as 400 and 409) when implementing this example fully.
+
 ---
 
 ## 10. Environment config
