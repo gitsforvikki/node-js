@@ -196,40 +196,166 @@ router.delete(
 
 ## 6. Validation middleware
 
-Conceptually:
+Validation middleware **checks incoming request data before the controller runs**. It prevents malformed input from reaching business logic and avoids repeating the same validation code in every controller.
 
-```js
-function validateBody(
-  schema
-) {
-  return (
-    req,
-    res,
-    next
-  ) => {
-    const result =
-      schema.safeParse(
-        req.body
-      );
+For example, a client might send:
 
-    if (!result.success) {
-      return res
-        .status(422)
-        .json({
-          errors:
-            result.error.issues,
-        });
-    }
-
-    req.validatedBody =
-      result.data;
-
-    next();
-  };
+```json
+{
+  "name": "",
+  "email": "wrong-email",
+  "isActive": "yes"
 }
 ```
 
-This removes raw parsing concerns from controllers.
+The server should reject this instead of creating an invalid user.
+
+### Why use a middleware factory?
+
+`validateBody(schema)` is a **function that returns an Express middleware function**. You pass different schemas to the same reusable validator.
+
+```js
+// src/middlewares/validate.middleware.js
+export const validateBody = (schema) => {
+  return (req, res, next) => {
+    const result = schema.safeParse(req.body);
+
+    if (!result.success) {
+      return res.status(422).json({
+        message: "Validation failed",
+        errors: result.error.issues,
+      });
+    }
+
+    req.validatedBody = result.data;
+    next();
+  };
+};
+```
+
+**Line by line:**
+
+1. `validateBody(schema)` receives validation rules.
+2. The returned `(req, res, next)` function runs for each matching request.
+3. `schema.safeParse(req.body)` checks and parses the incoming body without throwing on ordinary validation failures.
+4. If invalid, the middleware sends HTTP `422` with `result.error.issues` and **stops**.
+5. If valid, `result.data` is stored in `req.validatedBody`, and `next()` passes control to the controller.
+
+### Complete example with Zod
+
+Install the validator:
+
+```bash
+npm install zod
+```
+
+Project layout:
+
+```text
+express-practice/
+├── server.js
+└── src/
+    ├── middlewares/validate.middleware.js
+    ├── validators/user.schema.js
+    ├── routes/user.routes.js
+    └── controllers/user.controller.js
+```
+
+**Step 1 — Define the schema**
+
+```js
+// src/validators/user.schema.js
+import { z } from "zod";
+
+export const createUserSchema = z.object({
+  name: z.string().trim().min(2),
+  email: z.email(),
+  isActive: z.boolean(),
+});
+```
+
+This requires a nonempty name with at least 2 characters, a valid email, and a boolean `isActive` (including `false`). `z.email()` is Zod 4 syntax; in Zod 3 use `z.string().email()`.
+
+**Step 2 — Attach middleware to the route**
+
+```js
+// src/routes/user.routes.js
+import { Router } from "express";
+import { validateBody } from "../middlewares/validate.middleware.js";
+import { createUserSchema } from "../validators/user.schema.js";
+import { createUser, updateUser } from "../controllers/user.controller.js";
+
+const router = Router();
+
+router.post("/", validateBody(createUserSchema), createUser);
+router.put("/:id", validateBody(createUserSchema), updateUser);
+
+export default router;
+```
+
+**Step 3 — Use validated data in the controller**
+
+```js
+// src/controllers/user.controller.js
+export const createUser = (req, res) => {
+  const user = req.validatedBody;
+
+  // In a real app, call a service to save the user.
+  return res.status(201).json({
+    message: "User created successfully",
+    data: user,
+  });
+};
+```
+
+**Step 4 — Configure Express**
+
+```js
+// server.js
+import express from "express";
+import userRouter from "./src/routes/user.routes.js";
+
+const app = express();
+
+app.use(express.json()); // Must run before validation middleware.
+app.use("/api/users", userRouter);
+
+app.listen(3000, () => {
+  console.log("Server running on port 3000");
+});
+```
+
+### How does the request flow?
+
+```text
+POST /api/users
+       |
+       v
+express.json() --> req.body
+       |
+       v
+validateBody(createUserSchema)
+       |
+       +-- Invalid --> 422 response (controller skipped)
+       |
+       +-- Valid --> req.validatedBody = result.data
+                         |
+                         v
+                       next()
+                         |
+                         v
+                      createUser()
+```
+
+**Why `req.validatedBody`?** `result.data` contains the **parsed** values from Zod. For example, `trim()` can remove spaces from the name, and Zod object schemas normally strip unknown keys. The controller should use `req.validatedBody`, not the original untrusted `req.body`.
+
+### POST vs PUT vs PATCH
+
+- **POST:** Use `validateBody(createUserSchema)` to require all fields.
+- **PUT:** You can reuse that schema if the update requires all the same fields. Validate `req.params.id` separately.
+- **PATCH:** Often uses `createUserSchema.partial()` to allow individual fields to be updated. Consider rejecting an empty body.
+
+**Interview takeaway:** Validation middleware is a reusable request-pipeline concern. `validateBody(schema)` creates the middleware during route setup; Express invokes the returned function for each request. It either returns a validation error or calls `next()` with parsed data available for the controller.
 
 ---
 
