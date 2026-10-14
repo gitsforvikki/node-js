@@ -387,23 +387,23 @@ This example shows **why** versioning is needed, **where** to create version-spe
 
 Suppose an old React client calls:
 
-\`\`\`http
+```http
 GET /api/users/1
-\`\`\`
+```
 
 and expects:
 
-\`\`\`json
+```json
 {
   "id": 1,
   "name": "Vikash Kumar",
   "email": "vikash@gmail.com"
 }
-\`\`\`
+```
 
-Its UI reads \`user.name\`. Later, your new frontend needs a different response:
+Its UI reads `user.name`. Later, your new frontend needs a different response:
 
-\`\`\`json
+```json
 {
   "id": 1,
   "profile": {
@@ -412,15 +412,15 @@ Its UI reads \`user.name\`. Later, your new frontend needs a different response:
   },
   "email": "vikash@gmail.com"
 }
-\`\`\`
+```
 
-If you silently replace the old response, existing clients break because \`user.name\` is missing.
+If you silently replace the old response, existing clients break because `user.name` is missing.
 
-**Solution:** Keep \`GET /api/v1/users/1\` for old clients and introduce \`GET /api/v2/users/1\` for new clients. Both can read from the same database/service.
+**Solution:** Keep `GET /api/v1/users/1` for old clients and introduce `GET /api/v2/users/1` for new clients. Both can read from the same database/service.
 
 ### 2. Folder structure
 
-\`\`\`text
+```text
 express-practice/
 ├── package.json
 ├── server.js
@@ -438,21 +438,21 @@ express-practice/
         │   └── user.routes.js
         └── v2/
             └── user.routes.js
-\`\`\`
+```
 
 Install Express:
 
-\`\`\`bash
+```bash
 npm install express
-\`\`\`
+```
 
-Set \`"type": "module"\` in your \`package.json\` to use \`import\` syntax.
+Set `"type": "module"` in your `package.json` to use `import` syntax.
 
 ### 3. Build ONE shared service
 
-\`src/services/user.service.js\`
+`src/services/user.service.js`
 
-\`\`\`js
+```js
 const users = [
   {
     id: 1,
@@ -465,15 +465,15 @@ const users = [
 export const getUserById = (id) => {
   return users.find((user) => user.id === Number(id));
 };
-\`\`\`
+```
 
 The service returns the same internal user object for both API versions. It does not need to know whether the request came from V1 or V2.
 
 ### 4. V1 controller — preserve the old contract
 
-\`src/controllers/v1/user.controller.js\`
+`src/controllers/v1/user.controller.js`
 
-\`\`\`js
+```js
 import { getUserById } from "../../services/user.service.js";
 
 export const getUser = (req, res) => {
@@ -485,19 +485,19 @@ export const getUser = (req, res) => {
 
   return res.json({
     id: user.id,
-    name: \`\${user.firstName} \${user.lastName}\`,
+    name: `${user.firstName} ${user.lastName}`,
     email: user.email,
   });
 };
-\`\`\`
+```
 
-Old frontend code using \`user.name\` continues to work.
+Old frontend code using `user.name` continues to work.
 
 ### 5. V2 controller — return the new contract
 
-\`src/controllers/v2/user.controller.js\`
+`src/controllers/v2/user.controller.js`
 
-\`\`\`js
+```js
 import { getUserById } from "../../services/user.service.js";
 
 export const getUser = (req, res) => {
@@ -516,15 +516,15 @@ export const getUser = (req, res) => {
     email: user.email,
   });
 };
-\`\`\`
+```
 
-**What changes between versions?** Only the API response format. The underlying business data still comes from \`getUserById()\`.
+**What changes between versions?** Only the API response format. The underlying business data still comes from `getUserById()`.
 
 ### 6. Version-specific routers
 
-\`src/routes/v1/user.routes.js\`
+`src/routes/v1/user.routes.js`
 
-\`\`\`js
+```js
 import { Router } from "express";
 import { getUser } from "../../controllers/v1/user.controller.js";
 
@@ -532,11 +532,11 @@ const router = Router();
 router.get("/:id", getUser);
 
 export default router;
-\`\`\`
+```
 
-\`src/routes/v2/user.routes.js\`
+`src/routes/v2/user.routes.js`
 
-\`\`\`js
+```js
 import { Router } from "express";
 import { getUser } from "../../controllers/v2/user.controller.js";
 
@@ -544,15 +544,15 @@ const router = Router();
 router.get("/:id", getUser);
 
 export default router;
-\`\`\`
+```
 
-Both routers use \`/:id\`, but each points to the appropriate controller.
+Both routers use `/:id`, but each points to the appropriate controller.
 
 ### 7. Register version prefixes with app.use()
 
-\`src/app.js\`
+`src/app.js`
 
-\`\`\`js
+```js
 import express from "express";
 import v1UserRouter from "./routes/v1/user.routes.js";
 import v2UserRouter from "./routes/v2/user.routes.js";
@@ -564,31 +564,31 @@ app.use("/api/v1/users", v1UserRouter);
 app.use("/api/v2/users", v2UserRouter);
 
 export default app;
-\`\`\`
+```
 
-\`server.js\`
+`server.js`
 
-\`\`\`js
+```js
 import app from "./src/app.js";
 
 app.listen(3000, () => {
   console.log("Server running at http://localhost:3000");
 });
-\`\`\`
+```
 
 Express URL mounting is straightforward:
 
-\`\`\`text
+```text
 app.use("/api/v1/users", v1UserRouter)
                       +
 router.get("/:id", ...)
                       =
 GET /api/v1/users/1
-\`\`\`
+```
 
 ### 8. Visualize the complete request flow
 
-\`\`\`text
+```text
                   Client request
                         |
                         v
@@ -619,32 +619,32 @@ GET /api/v1/users/1
           |                         |
           v                         v
     { "name": "..." }         { "profile": {...} }
-\`\`\`
+```
 
 **Key idea:** Different URL versions do not require separate servers, services, or databases. Keep shared logic shared unless the business behavior itself has changed.
 
 ### 9. Run and test both URLs
 
-\`\`\`bash
+```bash
 node server.js
 
 curl http://localhost:3000/api/v1/users/1
 curl http://localhost:3000/api/v2/users/1
-\`\`\`
+```
 
 Expected V1:
 
-\`\`\`json
+```json
 {
   "id": 1,
   "name": "Vikash Kumar",
   "email": "vikash@gmail.com"
 }
-\`\`\`
+```
 
 Expected V2:
 
-\`\`\`json
+```json
 {
   "id": 1,
   "profile": {
@@ -653,9 +653,9 @@ Expected V2:
   },
   "email": "vikash@gmail.com"
 }
-\`\`\`
+```
 
-\`GET /api/v1/users/99\` or \`GET /api/v2/users/99\` will return \`404\` with \`{ "message": "User not found" }\` in this simplified example. In a larger application, you can reuse the centralized error handler from Lesson 87.
+`GET /api/v1/users/99` or `GET /api/v2/users/99` will return `404` with `{ "message": "User not found" }` in this simplified example. In a larger application, you can reuse the centralized error handler from Lesson 87.
 
 ### 10. When do you actually need V2?
 
@@ -665,7 +665,7 @@ Expected V2:
 | Improve SQL query speed | No | Invisible to clients |
 | Add an optional response field | No | Usually compatible |
 | Add a new endpoint | No | Existing endpoints keep working |
-| Rename \`name\` to \`profile\` | Yes | Old clients break |
+| Rename `name` to `profile` | Yes | Old clients break |
 | Remove required response fields | Yes | Old clients may depend on them |
 | Change existing field types | Yes | Old clients may break |
 | Make previously optional input mandatory | Yes | Old requests may fail |
@@ -674,16 +674,16 @@ The real question is: **Will existing clients continue working without code chan
 
 ### 11. Other API versioning approaches
 
-- **URL versioning:** \`/api/v1/users\` — explicit and easy to debug (recommended for this exercise).
-- **Custom header:** \`API-Version: 2\` — one URL, but version is less visible.
-- **Media type / Accept header:** \`Accept: application/vnd.myapp.v2+json\` — versioned representation.
-- **Query parameter:** \`/api/users?version=2\` — simple, but usually less preferred for major contracts.
+- **URL versioning:** `/api/v1/users` — explicit and easy to debug (recommended for this exercise).
+- **Custom header:** `API-Version: 2` — one URL, but version is less visible.
+- **Media type / Accept header:** `Accept: application/vnd.myapp.v2+json` — versioned representation.
+- **Query parameter:** `/api/users?version=2` — simple, but usually less preferred for major contracts.
 
-Express itself does not require a special versioning library. Versioned URL prefixes and \`Router()\` are enough for URL-based versioning.
+Express itself does not require a special versioning library. Versioned URL prefixes and `Router()` are enough for URL-based versioning.
 
 ### 12. What happens when V3 arrives? Deprecation lifecycle
 
-\`\`\`text
+```text
 V1 active
    |
    v
@@ -700,7 +700,7 @@ Migration window + monitor remaining V1 traffic
    |
    v
 V1 removed after communicated sunset date
-\`\`\`
+```
 
 Don't delete V1 immediately after releasing V2. Existing browsers, mobile apps, and external integrations may still depend on V1.
 
@@ -708,7 +708,7 @@ Also remember: **API versioning is not application versioning or database migrat
 
 ### 13. Interview-ready takeaway
 
-> API versioning lets us introduce backward-incompatible request or response changes without breaking existing consumers. In Express, I can mount separate routers at \`/api/v1\` and \`/api/v2\`, keep the controllers or serializers version-specific, and reuse shared services and databases. I introduce new major API versions for breaking changes and use a planned deprecation period to migrate clients.
+> API versioning lets us introduce backward-incompatible request or response changes without breaking existing consumers. In Express, I can mount separate routers at `/api/v1` and `/api/v2`, keep the controllers or serializers version-specific, and reuse shared services and databases. I introduce new major API versions for breaking changes and use a planned deprecation period to migrate clients.
 
 **Remember in one line:** Version the **public contract**, not every small code change.
 
