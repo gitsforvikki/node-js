@@ -14,37 +14,196 @@ Password hashing reduces the damage of a database breach.
 
 ## 1. Hashing vs encryption
 
-Hashing:
+Before learning password hashing, understand three different jobs:
 
-```text
-password
-   |
-   v
-one-way function
-   |
-   v
-hash
+- **Hashing:** Turn a password into a one-way value so the server can verify it later without recovering the original password.
+- **Encryption:** Protect data using a key. An authorized application can decrypt it when it needs the original value.
+- **JWT (JSON Web Token):** A token format that can carry verifiable claims. A signed JWT is often used after login to authenticate API requests. JWT is **not** a password hashing algorithm.
+
+### 1.1 The problem with storing plain passwords
+
+Suppose a user registers with:
+
+```js
+const password = "Vikash@123";
 ```
 
-Encryption:
+**Bad database record:**
 
-```text
-plaintext
-   |
-   v
-encryption key
-   |
-   v
-ciphertext
-   |
-   v
-decryption key
-   |
-   v
-plaintext
+```json
+{
+  "email": "user@example.com",
+  "password": "Vikash@123"
+}
 ```
 
-Passwords should generally be **hashed**, not reversibly encrypted.
+If the database leaks, the attacker immediately sees the original password. Instead, save a **password hash**.
+
+```text
+User password: Vikash@123
+        |
+        v
+Password-hashing algorithm (Argon2id / bcrypt)
+        |
+        v
+Encoded hash: $argon2id$...
+        |
+        v
+Database (store hash, not original password)
+```
+
+A password hash is **one-way**: there is no normal decrypt operation to get the password back. This does not mean weak passwords are impossible to guess; attackers can still try candidate passwords against stolen hashes.
+
+### 1.2 Node.js example: hash and verify using bcrypt
+
+Install with `npm install bcrypt`.
+
+**At registration:**
+
+```js
+import bcrypt from "bcrypt";
+
+const password = "Vikash@123";
+const hashedPassword = await bcrypt.hash(password, 12);
+
+// Save hashedPassword, NOT password, in your database.
+```
+
+**At login:**
+
+```js
+const isValid = await bcrypt.compare(
+  "Vikash@123",
+  user.passwordHash
+);
+
+if (!isValid) {
+  throw new Error("Invalid credentials");
+}
+```
+
+`bcrypt.compare()` **does not decrypt** the database hash. It uses the salt and cost parameters stored with the encoded hash to verify the password. Real login code must also handle a user that does not exist and should return a generic credentials error.
+
+**Which algorithm?** Prefer **Argon2id** for new systems where supported. **bcrypt** remains a widely used, established option. **SHA-256 alone is not suitable for password storage** because it is too fast; see Sections 5–11 for salt, algorithm and work-factor details.
+
+### 1.3 Encryption: when we need the original data again
+
+Imagine your backend stores an API credential that it must send to another service later. It needs to recover the original value securely, so encryption is appropriate.
+
+```text
+Original data
+     |
+     v
+Encrypt using key
+     |
+     v
+Unreadable ciphertext (stored)
+     |
+     v
+Decrypt with authorized key
+     |
+     v
+Original data again
+```
+
+For **symmetric encryption**, the same secret key encrypts and decrypts. For **asymmetric encryption**, the key pair has different roles. Use authenticated encryption such as **AES-256-GCM** through well-tested libraries; protect and rotate encryption keys appropriately.
+
+Examples of when encryption is useful:
+- Third-party API credentials that the backend must retrieve
+- Confidential documents an authorized user will read again
+- Sensitive data the application genuinely needs in original form
+
+**Why not encrypt login passwords?** Login only needs to verify a candidate password. If the password were encrypted, the server would hold a key capable of revealing every stored password. A one-way password hash avoids that unnecessary ability.
+
+### 1.4 Hashing vs encryption: quick comparison
+
+| Question | Password hashing | Encryption |
+| --- | --- | --- |
+| Can we recover original data? | No normal reverse/decrypt operation | Yes, with the required key |
+| Needs a reversible secret key? | No (optional separate pepper is different) | Yes / appropriate key pair |
+| Main purpose | Verify a password safely | Keep recoverable data confidential |
+| Common algorithms | Argon2id, bcrypt, scrypt, PBKDF2 | AES-GCM |
+| Store login passwords? | **Yes** | **Generally no** |
+| Typical use | Signup + login verification | Protecting recoverable secrets |
+
+### 1.5 Where JWT fits after login
+
+Now imagine the password is verified. The user requests `/profile` or `/orders` later. Asking for email and password on every request is a bad approach. One option is **JWT-based authentication**:
+
+```text
+1. Client -> POST /login with email + password
+2. Server -> retrieve saved password hash; verify password
+3. Server -> issue a short-lived signed JWT
+4. Client -> GET /profile, Authorization: Bearer <token>
+5. Server -> verify JWT signature and expiry; check authorization
+6. Server -> return allowed resource
+```
+
+**Minimal Node.js illustration:**
+
+```js
+import jwt from "jsonwebtoken";
+
+// Only AFTER successfully verifying the user's password:
+const token = jwt.sign(
+  { sub: String(user.id) },
+  process.env.JWT_SECRET,
+  { algorithm: "HS256", expiresIn: "15m" }
+);
+
+// In authentication middleware, after extracting the Bearer token:
+const payload = jwt.verify(token, process.env.JWT_SECRET, {
+  algorithms: ["HS256"],
+});
+
+console.log(payload.sub); // user ID (subject)
+```
+
+Here, `sub` identifies the user; `JWT_SECRET` is a private server-side signing secret; `expiresIn` limits token lifetime. Production systems should also validate relevant claims such as issuer/audience, handle invalid tokens, and check permissions for each protected operation.
+
+**Is JWT encrypted? Usually not.** A typical signed JWT has three parts:
+
+```text
+header.payload.signature
+```
+
+- **Header:** token metadata / signing algorithm
+- **Payload:** claims such as user ID and expiry; Base64URL encoded, **not secret**
+- **Signature:** protects integrity and helps verify who issued it, given the trusted signing key
+
+Anyone holding a normal signed JWT can decode its header and payload. **Never store passwords, API secrets, or sensitive personal data in the JWT payload.** Encrypted JWTs (JWE) also exist, but signing does not imply encryption.
+
+JWT is **not mandatory** for authentication. Server-side sessions are another valid approach. JWT verification does not automatically mean a user has permission to perform a particular action: **authentication** confirms identity; **authorization** checks permissions. Token storage, expiration, revocation and logout need deliberate design.
+
+### 1.6 When to use what: real backend scenarios
+
+| Backend requirement | Best-fit mechanism |
+| --- | --- |
+| Store password at signup | Password hashing |
+| Check password at login | Hash verification |
+| Securely store recoverable third-party credentials | Encryption |
+| Authenticate later API requests | Signed JWT **or** server-side session |
+| Allow access to another user's order? | Authorization check after authentication |
+
+### 1.7 Interview questions
+
+**Q: Why hash passwords instead of encrypting them?**  
+Because login only needs to verify a submitted password, not retrieve the original. Reversible encryption creates an unnecessary key that could expose stored passwords.
+
+**Q: Can hackers crack password hashes?**  
+They may guess weak passwords offline if they steal hashes. Unique salts and deliberately expensive password-hashing algorithms make guessing harder; they cannot guarantee absolute safety.
+
+**Q: Does JWT hash passwords?**  
+No. Password hashing protects stored credentials; JWT carries signed or otherwise protected claims for subsequent requests.
+
+**Q: Is JWT payload secure from readers?**  
+No. A common signed JWT is encoded, not encrypted. Do not place confidential data there.
+
+**Q: Does verifying a JWT automatically authorize a user?**  
+No. Your application must still check access to the requested resource.
+
+**Remember:** **Hash the password. Encrypt data you must recover. Use JWT or sessions to maintain authentication, then check authorization.**
+
 
 ---
 
