@@ -1,5 +1,393 @@
 # Lesson 125 — Refresh Tokens
 
+## Start here — Refresh Token from zero (React + Express)
+
+Is section ko **sequence me padho**. Har next step pichhle step par based hai. Pehle problem samjhenge, phir token generation, database mapping, cookie storage, refresh request, rotation, page reload aur logout. Neeche existing advanced sections bhi preserved hain.
+
+### Step 1 — Refresh Token ki zarurat kyu hai?
+
+Imagine tumne React + Express shopping app banaya. User login karta hai, server **15-minute access token** deta hai. Access token protected APIs (`/api/profile`, `/api/orders`) call karne ka short-term pass hai.
+
+**Problem:** 15 minutes ke baad access token expire ho gaya. Kya user ko baar-baar password enter karna hoga?
+
+**Solution:** Server ek alag **refresh token** bhi issue karta hai. Client usse **sirf refresh endpoint** par bhejta hai, aur server valid refresh session ke basis par **naya access token** issue karta hai.
+
+```text
+LOGIN (email + password)
+         |
+         v
+Server verifies password hash
+         |
+         +----> ACCESS TOKEN (example: 15 min) --> Protected API requests
+         |
+         +----> REFRESH TOKEN (example: 7 days) --> Only /auth/refresh
+                                                         |
+                                                         v
+                                              New access token
+```
+
+**Simple meaning:** Access token = API use karne ka temporary pass. Refresh token = naya temporary pass lene ka protected credential.
+
+### Step 2 — Dono tokens kaise generate hote hain?
+
+**Access token** JWT ho sakta hai. **Refresh token** JWT bhi ho sakta hai, lekin hum yahan **opaque random token** use karenge. Opaque ka matlab: token ke andar readable user ID ya role nahi hai.
+
+```js
+import jwt from "jsonwebtoken";
+import crypto from "node:crypto";
+
+// Assume password has already been checked against saved hash.
+const accessToken = jwt.sign(
+  { sub: String(user.id) },
+  process.env.ACCESS_TOKEN_SECRET,
+  { algorithm: "HS256", expiresIn: "15m" }
+);
+
+const refreshToken = crypto.randomBytes(32).toString("base64url");
+```
+
+`randomBytes(32)` secure 256-bit random value banata hai. Har login/session ko alag random refresh token milna chahiye.
+
+**Important doubt:** “Refresh token me `userId` nahi hai, to server ko kaise pata chalega ye kis user ka hai?” **Answer: Database mapping.** Agla step dekho.
+
+### Step 3 — Refresh token ko user se kaise connect karte hain?
+
+Login successful hote hi server refresh token ka **SHA-256 hash** nikal kar database me user ID ke saath save karta hai:
+
+```js
+import crypto from "node:crypto";
+
+function hashToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+const tokenHash = hashToken(refreshToken);
+
+await db.refreshSessions.create({
+  userId: user.id,
+  tokenHash,
+  expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+  revokedAt: null,
+});
+```
+
+`db.refreshSessions.create` example database-repository function hai, built-in Node.js method nahi.
+
+**Database example:**
+
+| sessionId | userId | tokenHash | expiresAt | revokedAt |
+| --- | --- | --- | --- | --- |
+| S1 | 101 | hash-of-R1 | 7 days later | null |
+| S2 | 205 | hash-of-R2 | 7 days later | null |
+
+```text
+Raw Refresh Token R1  (browser)
+          |
+          v
+     SHA-256(R1)
+          |
+          v
+DB: tokenHash matches S1
+          |
+          v
+DB record says userId = 101
+          |
+          v
+Now server knows which user/session it belongs to
+```
+
+**Token me user information hona zaruri nahi.** Database mapping trusted user identity batati hai. Lekin valid token **jiske paas bhi hai woh use kar sakta hai**—isliye theft protection important hai.
+
+**Why SHA-256 here?** Random refresh token high-entropy hai, isliye SHA-256 hash lookup practical hai. **Human passwords** ke liye SHA-256 alone mat use karo; Argon2id/bcrypt jaise password-hashing algorithms use karo.
+
+### Step 4 — Refresh token kaha store karna chahiye?
+
+Do jagah alag cheezein store hoti hain:
+
+```text
+BROWSER                           SERVER DATABASE
+---------------------------       ----------------------------
+Raw Refresh Token R1              hash(R1)
+Secure + HttpOnly cookie           userId = 101
+                                  expiresAt, revokedAt, etc.
+
+Access token: React memory (in this example)
+```
+
+Express login response me cookie set karta hai:
+
+```js
+res.cookie("refreshToken", refreshToken, {
+  httpOnly: true,
+  secure: true,      // production HTTPS
+  sameSite: "lax",  // choose according to frontend/backend sites
+  path: "/auth",
+  maxAge: 7 * 24 * 60 * 60 * 1000,
+});
+
+res.json({ accessToken });
+```
+
+- `HttpOnly`: React JavaScript cookie ko directly read nahi kar sakta.
+- `Secure`: HTTPS par cookie send hoti hai (production).
+- `SameSite`: cross-site cookie sending limit karta hai; **CSRF controls phir bhi consider karo**.
+- `path: "/auth"`: matching `/auth` routes par cookie send hoti hai.
+- `maxAge`: browser cookie ka lifetime. **DB expiry bhi independently check karna zaruri hai.**
+
+Frontend/backend cross-site hone par `SameSite=None; Secure`, correct CORS credentials aur stronger CSRF/origin controls ki zarurat ho sakti hai. **Raw refresh token ko localStorage, URL, logs ya analytics me mat rakho.**
+
+### Step 5 — Access token expire hone par exactly kya hota hai?
+
+```text
+React -> GET /api/profile (Bearer access token)
+                         |
+                         v
+                Access token expired
+                         |
+                         v
+                    401 response
+                         |
+                         v
+React -> POST /auth/refresh (credentials: "include")
+                         |
+                         v
+Browser sends HttpOnly refresh cookie automatically
+                         |
+                         v
+Express hashes raw refresh token
+                         |
+                         v
+DB finds matching session -> checks expiry + revoked + user status
+                         |
+                  +------+------+
+                  |             |
+                VALID         INVALID
+                  |             |
+                  v             v
+         Rotate refresh       401 -> login
+         Issue access token
+                  |
+                  v
+React saves new access token in memory
+                  |
+                  v
+Retry original protected request once
+```
+
+React request:
+
+```js
+async function requestNewAccessToken() {
+  const response = await fetch("/auth/refresh", {
+    method: "POST",
+    credentials: "include",
+  });
+
+  if (!response.ok) throw new Error("Please log in again");
+
+  const data = await response.json();
+  return data.accessToken;
+}
+```
+
+React cookie read nahi karta. Browser cookie attach karta hai, agar origin/site/cookie rules allow karte hain.
+
+### Step 6 — Express refresh endpoint user kaise validate karta hai?
+
+Pehle **simple verification logic** samjho. Agle step me production rotation add karenge.
+
+```js
+import jwt from "jsonwebtoken";
+
+// Requires cookie-parser middleware: app.use(cookieParser())
+export async function refreshController(req, res) {
+  const rawToken = req.cookies?.refreshToken;
+  if (!rawToken) return res.sendStatus(401);
+
+  const session = await db.refreshSessions.findByTokenHash(
+    hashToken(rawToken)
+  );
+
+  if (!session || session.revokedAt || session.expiresAt <= new Date()) {
+    return res.sendStatus(401);
+  }
+
+  // userId comes from trusted database session, NOT from opaque token.
+  const user = await db.users.findById(session.userId);
+  if (!user || user.isDisabled) return res.sendStatus(401);
+
+  const accessToken = jwt.sign(
+    { sub: String(user.id) },
+    process.env.ACCESS_TOKEN_SECRET,
+    { algorithm: "HS256", expiresIn: "15m" }
+  );
+
+  return res.json({ accessToken });
+}
+```
+
+`db.refreshSessions.findByTokenHash` and `db.users.findById` are example repository methods. This is a **learning-only validation example**; a production refresh endpoint should also rotate tokens atomically, handle reuse, and enforce CSRF/origin protection.
+
+**Fake token?** `hash(fakeToken)` ka matching active DB record nahi milega -> **401**. **Stolen real token?** Matching session mil sakta hai; isliye rotation, secure storage aur theft detection important hain.
+
+### Step 7 — Refresh Token Rotation kya hai?
+
+Har successful refresh ke baad **old refresh token invalidate** karo aur **new refresh token issue** karo.
+
+```text
+LOGIN          -> Access A1 + Refresh R1
+First refresh  -> invalidate R1 -> Access A2 + Refresh R2
+Second refresh -> invalidate R2 -> Access A3 + Refresh R3
+
+Old R1/R2 must NOT work again.
+```
+
+**Simple implementation idea:**
+
+```js
+const nextRefreshToken = crypto.randomBytes(32).toString("base64url");
+const nextHash = hashToken(nextRefreshToken);
+
+// IMPORTANT: DB consume-old + create-new MUST be one atomic transaction.
+// db.rotateRefreshSession is a placeholder for that transaction.
+await db.rotateRefreshSession({
+  oldSessionId: session.id,
+  oldTokenHash: hashToken(rawToken),
+  newTokenHash: nextHash,
+  userId: user.id,
+  expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+});
+
+res.cookie("refreshToken", nextRefreshToken, {
+  httpOnly: true,
+  secure: true,
+  sameSite: "lax",
+  path: "/auth",
+  maxAge: 7 * 24 * 60 * 60 * 1000,
+});
+
+return res.json({ accessToken });
+```
+
+This snippet shows **the rotation step** and replaces the last `res.json` in Step 6; it is **not** a standalone handler. Real DB transaction must ensure **only one request can consume R1**, check revocation/expiry inside the transaction, and save the replacement before sending cookie/response.
+
+**Reuse detection:** Agar already-consumed R1 dobara aaye, possible theft/replay hai. System token family revoke kar sakta hai. Simultaneous browser requests bhi duplicate refresh kar sakte hain, so use atomic rotation + client refresh deduplication.
+
+### Step 8 — Page reload par React memory clear ho gayi, ab kya?
+
+React memory me access token tha, reload se lost ho gaya. Refresh cookie browser me abhi bhi ho sakti hai.
+
+```js
+async function restoreSession() {
+  const response = await fetch("/auth/refresh", {
+    method: "POST",
+    credentials: "include",
+  });
+
+  if (!response.ok) return null;
+
+  const { accessToken } = await response.json();
+  return accessToken; // store in app memory
+}
+```
+
+App startup par once call karke authenticated state restore kar sakte ho. Valid refresh session nahi mila to user ko login karna hoga. Har API request par refresh call mat karo.
+
+### Step 9 — Logout me kya karna hai?
+
+```text
+User clicks Logout
+       |
+       v
+POST /auth/logout (refresh cookie sent)
+       |
+       v
+Server finds and revokes refresh session in DB
+       |
+       v
+Server clears refresh cookie
+       |
+       v
+React clears access token from memory
+```
+
+Cookie clear example:
+
+```js
+res.clearCookie("refreshToken", {
+  httpOnly: true,
+  secure: true,
+  sameSite: "lax",
+  path: "/auth",
+});
+```
+
+**Only cookie clear karna enough nahi hai.** DB session revoke bhi karo. Aur pehle issued JWT access token apni expiry tak valid reh sakta hai unless separate access-token revocation check hota hai.
+
+### Step 10 — Quick comparison
+
+| Question | Access Token | Refresh Token |
+| --- | --- | --- |
+| Why? | Protected API access | New access token obtain |
+| Example lifetime | 15 minutes | 7 days |
+| Format | JWT or opaque | JWT or opaque |
+| Browser storage in this design | React memory | HttpOnly Secure cookie |
+| Server storage in this design | JWT verification (no DB token row required) | Hashed DB session record |
+| Sent to | Protected APIs | Refresh/logout endpoint |
+| Rotation | New token on refresh | Replace old token every use |
+
+### Step 11 — Interview questions (simple answers)
+
+**Q. Refresh token me userId nahi hai, user kaise identify hoga?**  
+Server refresh token ka hash nikalta hai, DB session lookup karta hai, aur matching record se `userId` read karta hai.
+
+**Q. Refresh token kaise generate hota hai?**  
+`crypto.randomBytes(32).toString("base64url")` se secure random opaque token bana sakte hain.
+
+**Q. Client aur server par kya store hota hai?**  
+Client: raw token in Secure HttpOnly cookie. Server: token ka hash + userId + expiry/revocation in DB.
+
+**Q. Access token kab regenerate hota hai?**  
+When it expires/is near expiry, or on page reload if app uses memory and needs to restore session. Client valid refresh credential ke saath refresh endpoint call karta hai.
+
+**Q. Kya random fake token se access token mil jayega?**  
+Nahi, because uska hash DB me active session se match nahi karega.
+
+**Q. Kya valid stolen refresh token use ho sakta hai?**  
+Haan. Bearer credential chori ho jaye to misuse possible hai. Rotation, secure cookies, CSRF controls, revocation aur monitoring se risk reduce karte hain.
+
+**Q. JWT refresh token compulsory hai?**  
+Nahi. Opaque random token + DB mapping ek common, straightforward option hai.
+
+**Q. Rotation ka kya matlab hai?**  
+Har successful refresh par old refresh token invalidate karna aur naya issue karna.
+
+### One-page mental model
+
+```text
+LOGIN -> Verify password -> Issue A1 + R1
+                         -> DB saves userId + hash(R1)
+                         -> Browser saves R1 in HttpOnly cookie
+                         -> React memory saves A1
+
+API -> React sends A1 -> Server verifies -> protected response
+
+A1 expires -> React POST /auth/refresh
+           -> Browser sends R1 cookie
+           -> Server hash(R1) -> DB session -> userId
+           -> Validate session + user
+           -> Atomically invalidate R1, save hash(R2)
+           -> Return A2 + set R2 cookie
+
+LOGOUT -> Revoke refresh session + clear cookie + clear memory
+```
+
+**Remember:** Refresh token me user info hona zaruri nahi. **Database mapping user ko identify karti hai; secure token possession refresh request ko authenticate karti hai.**
+
+---
+
+## Further concepts and production notes
+
 ## Why refresh tokens matter
 
 Refresh tokens solve a key authentication problem:
