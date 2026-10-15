@@ -230,6 +230,120 @@ export async function refreshController(req, res) {
 
 **Fake token?** `hash(fakeToken)` ka matching active DB record nahi milega -> **401**. **Stolen real token?** Matching session mil sakta hai; isliye rotation, secure storage aur theft detection important hain.
 
+### Step 6A — Express me practical implementation: 3 connected steps
+
+Ab pichhle concepts ko **ek hi example** me connect karte hain. Yeh woh **three practical steps** hain: **(1) login par token generate/save, (2) client refresh request, (3) server token verify karke access token reissue**.
+
+**Assumptions:** `cookie-parser` installed hai, `app.use(cookieParser())` configured hai, login password verification already successful hai, aur `db` tumhara database repository layer hai. Neeche repository methods **illustrative** hain; apne database ke hisaab se implement karne honge.
+
+#### Practical Step 1 — Login ke time Refresh Token generate, DB me map aur cookie me save
+
+```js
+import crypto from "node:crypto";
+import jwt from "jsonwebtoken";
+
+function createRefreshToken() {
+  return crypto.randomBytes(32).toString("base64url");
+}
+
+function hashToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+// After login password verification:
+const accessToken = jwt.sign(
+  { sub: String(user.id) },
+  process.env.ACCESS_TOKEN_SECRET,
+  { algorithm: "HS256", expiresIn: "15m" }
+);
+
+const refreshToken = createRefreshToken();
+
+await db.refreshSessions.create({
+  userId: user.id,
+  tokenHash: hashToken(refreshToken),
+  expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+  revokedAt: null,
+});
+
+res.cookie("refreshToken", refreshToken, {
+  httpOnly: true,
+  secure: true,
+  sameSite: "lax",
+  path: "/auth",
+  maxAge: 7 * 24 * 60 * 60 * 1000,
+});
+
+return res.json({ accessToken });
+```
+
+**Samjho:** Browser ko **raw** refresh token cookie me milta hai; DB me **sirf hash + userId** save hota hai. Access token JSON response me aata hai, jise React memory me rakh sakti hai. Token generate karna aur user ke saath map karna **login time** hota hai.
+
+#### Practical Step 2 — React access token renew karne ki request bhejti hai
+
+Jab access token expire ho, protected API typically **401** deti hai. React:
+
+```js
+async function getNewAccessToken() {
+  const response = await fetch("/auth/refresh", {
+    method: "POST",
+    credentials: "include",
+  });
+
+  if (!response.ok) throw new Error("Please login again");
+
+  const { accessToken } = await response.json();
+  return accessToken; // save in React memory
+}
+```
+
+**Samjho:** React refresh token ko `localStorage` se nahi nikaalti. `credentials: "include"` ke saath browser matching **HttpOnly cookie automatically send** karta hai. Is request ko CSRF/origin checks se protect karo.
+
+#### Practical Step 3 — Express refresh cookie validate karta hai aur access token reissue karta hai
+
+```js
+export async function refreshController(req, res) {
+  const rawToken = req.cookies?.refreshToken;
+  if (!rawToken) return res.sendStatus(401);
+
+  const session = await db.refreshSessions.findByTokenHash(
+    hashToken(rawToken)
+  );
+  if (!session || session.revokedAt || session.expiresAt <= new Date()) {
+    return res.sendStatus(401);
+  }
+
+  // Opaque token me userId nahi: DB mapping se userId milta hai.
+  const user = await db.users.findById(session.userId);
+  if (!user || user.isDisabled) return res.sendStatus(401);
+
+  const accessToken = jwt.sign(
+    { sub: String(user.id) },
+    process.env.ACCESS_TOKEN_SECRET,
+    { algorithm: "HS256", expiresIn: "15m" }
+  );
+
+  return res.json({ accessToken });
+}
+```
+
+**Samjho:** Server `hash(rawToken)` calculate karta hai → matching **DB session** find karta hai → us record se **userId** milta hai → user active hai ya nahi check karta hai → tabhi naya access token deta hai. **Fake token** ka matching DB session nahi milega, isliye 401.
+
+```text
+LOGIN (Step 1)
+user 101 -> generate R1 -> DB saves hash(R1) + userId=101
+                        -> browser receives R1 cookie
+
+REFRESH (Step 2)
+React -> POST /auth/refresh -> browser sends R1 cookie
+
+VERIFY + REISSUE (Step 3)
+Express -> hash(R1) -> DB record -> userId 101 -> check user
+        -> new access token A2 -> React
+```
+
+**Important:** Step 3 deliberately **basic learning version** hai. Production me old R1 ko **atomically consume** karke R2 issue karo; next section me rotation samjhenge. Ek hi handler me Step 3 ke last `res.json` ko rotation ke baad call karna hoga.
+
 ### Step 7 — Refresh Token Rotation kya hai?
 
 Har successful refresh ke baad **old refresh token invalidate** karo aur **new refresh token issue** karo.
