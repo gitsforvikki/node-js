@@ -1,5 +1,207 @@
 # Lesson 128 — Session-based Authentication
 
+## Beginner walkthrough — Session aur Session Hijacking (simple Hinglish)
+
+Yeh walkthrough **ek hi login example ko sequence me follow** karta hai. Iske baad original production concepts (Redis, TTL, JWT comparison, etc.) continue hote hain.
+
+### Step 1 — Session kya hai aur kyu chahiye?
+
+Maan lo tum shopping app me email/password se login karte ho. Ab tum `/profile`, `/orders` aur `/cart` open karte ho. Har request par password dobara bhejna sahi nahi.
+
+**Session** = server-side record jo batata hai ki login kis user ka active hai.
+
+Example session record (simplified; real ID random hona chahiye):
+
+```js
+{
+  sessionId: "random-unpredictable-id",
+  userId: 101,
+  createdAt: "...",
+  expiresAt: "..."
+}
+```
+
+**Cookie aur session alag hain:**
+- **Cookie** browser me ek chhota `session ID` store karti hai.
+- **Session record** server-side Redis/DB me rehta hai; `session ID` se `userId` milta hai.
+- Session ID secret credential ki tarah protect karna chahiye.
+
+### Step 2 — Login se protected API tak complete flow
+
+```text
+User browser                    Express server                Session store
+     |                                |                              |
+     | POST /login (credentials)     |                              |
+     |------------------------------->|                              |
+     |                         Password verify                       |
+     |                                | create random SID            |
+     |                                |------ save SID -> user 101 ->|
+     |<----- Set-Cookie: sid=SID -----|                              |
+     |                                                               |
+     | GET /profile (Cookie: sid=SID)                                 |
+     |------------------------------->|---- find SID in store ------>|
+     |                                |<---- userId = 101 -----------|
+     |<---------- profile ------------|                              |
+```
+
+Session ID browser se send hoti hai, server lookup karta hai, **authentication** establish hoti hai. Uske baad **authorization** check karo (kya user ko is resource ki permission hai?).
+
+### Step 3 — Express 5 practical setup
+
+Install:
+
+```bash
+npm install express express-session
+```
+
+Example (learning/demo; assumes `SESSION_SECRET` environment variable is set):
+
+```js
+import express from "express";
+import session from "express-session";
+
+const app = express();
+app.use(express.json());
+
+app.use(session({
+  name: "sid",
+  secret: process.env.SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    secure: true, // HTTPS production
+    sameSite: "lax",
+    maxAge: 24 * 60 * 60 * 1000,
+  },
+}));
+
+// Assume authenticateUser verifies password against saved password hash.
+app.post("/login", async (req, res, next) => {
+  const user = await authenticateUser(req.body.email, req.body.password);
+  if (!user) return res.sendStatus(401);
+
+  // Callback APIs need explicit error forwarding.
+  req.session.regenerate((error) => {
+    if (error) return next(error);
+    req.session.userId = user.id;
+
+    req.session.save((error) => {
+      if (error) return next(error);
+      res.json({ message: "Logged in" });
+    });
+  });
+});
+
+app.get("/profile", (req, res) => {
+  if (!req.session?.userId) return res.sendStatus(401);
+  res.json({ userId: req.session.userId });
+});
+```
+
+**Samjho:**
+1. `authenticateUser` example repository/auth function hai; real code me implement karna hoga.
+2. `req.session.regenerate()` successful login par **fresh session ID** deta hai.
+3. `req.session.userId` server session me save hota hai, browser cookie me pura object nahi.
+4. `/profile` session check karta hai. Express 5 promise-returning async handlers ki errors middleware ko forward karta hai, lekin `regenerate`/`save` callbacks me `next(error)` chahiye.
+5. Default `MemoryStore` **sirf local learning ke liye** hai; production me Redis/DB session store use karo.
+6. Cookie `secure: true` ke saath HTTPS chahiye; local HTTP testing ke liye environment-specific config rakho. Proxy ke peeche `trust proxy` carefully configure karo.
+
+### Step 4 — Session Hijacking kya hai?
+
+Imagine logged-in user ka valid session ID `SID-REAL` hai. Kisi attacker ke paas wahi ID aa gayi.
+
+```text
+Real user:  Cookie sid=SID-REAL ---> Server ---> Session user 101
+Attacker:   Cookie sid=SID-REAL ---> Server ---> Session user 101
+```
+
+**Session Hijacking** = attacker kisi valid authenticated session credential ko chura/misuse karke user ki identity se request bhejta hai. **Session ID bearer credential hai**: jiske paas hai, woh use attempt kar sakta hai. Real user ka password attacker ko maloom hona zaruri nahi.
+
+Session credential leak ke examples: JS-readable token par XSS, insecure HTTP, malware/browser extension, leaked logs/URLs, compromised devices, weak/predictable session IDs. `HttpOnly` cookie ko JavaScript directly read nahi kar sakta, **lekin XSS us session ka use karke requests phir bhi trigger kar sakta hai**.
+
+### Step 5 — Session Fixation vs Hijacking
+
+**Hijacking:** attacker existing **authenticated** session credential obtain karta hai.
+
+**Fixation:** attacker user se pehle se known session ID use karwane ki koshish karta hai, phir user usi ID par login karta hai.
+
+```text
+Session fixation:
+Known SID-A -> user logs in -> if same SID-A stays valid -> attacker misuses SID-A
+
+Protection:
+Known SID-A -> user logs in -> regenerate -> NEW SID-B
+Attacker only knows SID-A; SID-B authenticated session is different
+```
+
+Isliye successful login aur privilege elevation par **session ID regenerate** karo.
+
+### Step 6 — Session Hijacking se bachne ke practical rules
+
+| Protection | Simple reason |
+| --- | --- |
+| HTTPS + HSTS | Session credential network me expose hone ka risk kam |
+| `HttpOnly` | JS cannot directly read cookie |
+| `Secure` | Cookie HTTPS par hi send |
+| `SameSite` + CSRF defense | Automatic cookies ka cross-site misuse reduce |
+| Strong random session ID | Guess/predict nahi hona chahiye |
+| Regenerate after login | Session fixation se bachav |
+| XSS prevention + CSP | Malicious scripts ka risk reduce |
+| Idle + absolute expiry | Stolen session ka useful lifetime limit |
+| Destroy session on logout | Server-side credential revoke |
+| Re-auth/MFA for sensitive actions | Stolen session se high-risk actions harder |
+
+**Important:** Inme se koi single flag **100% protection** nahi deta. Together use karo. Cookie-based `POST/PUT/PATCH/DELETE` requests ke liye appropriate CSRF protection lagao; sirf CORS ko CSRF solution mat samjho.
+
+### Step 7 — Logout sirf cookie delete karna nahi hai
+
+Agar cookie delete kar di, lekin server session Redis me valid hai, toh attacker ke paas stolen SID ho to ab bhi use ho sakta hai.
+
+```js
+app.post("/logout", (req, res, next) => {
+  req.session.destroy((error) => {
+    if (error) return next(error);
+
+    res.clearCookie("sid", {
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      path: "/",
+    });
+    res.sendStatus(204);
+  });
+});
+```
+
+Cookie clear karte time original cookie ka **name, path aur domain** match karo. Logout endpoint ko bhi relevant CSRF protection do.
+
+```text
+LOGOUT -> server destroys session -> browser clears cookie
+       -> stolen old SID no longer resolves to active session
+```
+
+### Step 8 — Session vs JWT vs Refresh Session
+
+| Concept | Browser / client holds | Server validation |
+| --- | --- | --- |
+| Traditional session | Random session ID cookie | Session ID -> Redis/DB -> user |
+| JWT access token | Signed JWT | Verify signature, expiry and claims |
+| Opaque refresh token | Random refresh token (e.g. HttpOnly cookie) | Hash token -> DB refresh session -> user |
+
+**Connection to Lesson 125:** Opaque refresh token aur traditional session ID **dono random bearer secrets** ho sakte hain. Dono me server-side lookup se user identify ho sakta hai. Lekin **refresh token naya access token lene ke liye** hota hai; **traditional session cookie directly web requests authenticate** kar sakti hai.
+
+### Interview quick revision
+
+**Session?** Server-side login state, browser usually only random session ID stores.  
+**Session hijacking?** Valid session credential ka unauthorized reuse.  
+**Session fixation?** User ko attacker-known session ID par login karwana.  
+**Fixation prevention?** Login ke baad session ID regenerate.  
+**Hijacking protection?** HTTPS, secure cookies, strong SID, XSS/CSRF defenses, expiry, logout revocation, MFA where needed.  
+**Does HttpOnly stop all XSS?** Nahi. Cookie directly read nahi ho sakti, lekin injected script authenticated actions trigger kar sakta hai.
+
+---
+
 ## Why this lesson matters
 
 Session-based authentication is one of the oldest and still one of the most important web authentication models.
