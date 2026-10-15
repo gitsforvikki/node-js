@@ -306,60 +306,144 @@ They are designed to make brute-force attacks more expensive.
 
 ## 7. Salt
 
-A salt is a random value combined with the password before hashing.
+**Salt** ek random value hai jo password hashing ke time use hoti hai. Har password hash ke liye **naya, unique salt** generate karna chahiye.
 
-Purpose:
+### Salt ki zarurat kyu hai?
 
-- same passwords produce different hashes
-- prevents easy rainbow-table reuse
-- makes precomputed attacks less useful
-
-Example:
+Maan lo do users ne same password rakha:
 
 ```text
 User A password: hello123
 User B password: hello123
-
-with unique salts:
-
-hash A != hash B
 ```
+
+Agar koi simple deterministic hashing function **bina salt** ke use ho, to same password ka same hash banega:
+
+```text
+User A: hello123 -> abc123xyz
+User B: hello123 -> abc123xyz
+```
+
+Isse database leak hone par attacker ko pata chal sakta hai ki dono users ka password same hai. Precomputed hash/rainbow-table attacks bhi aasaan ho sakte hain.
+
+**Salt solution:**
+
+```text
+User A: hello123 + unique salt A -> password hashing -> Hash A
+User B: hello123 + unique salt B -> password hashing -> Hash B
+
+Same password, different salts -> different hashes
+```
+
+Salt ke benefits:
+- Same passwords ka hash alag hota hai.
+- Precomputed/rainbow-table attacks ko bahut kam useful banata hai.
+- Attacker ko har salted hash ke against password guesses test karne padte hain.
+
+**Node.js + bcrypt example:**
+
+Install: `npm install bcrypt`
+
+```js
+import bcrypt from "bcrypt";
+
+const password = "hello123";
+
+const hash1 = await bcrypt.hash(password, 12);
+const hash2 = await bcrypt.hash(password, 12);
+
+console.log(hash1);
+console.log(hash2);
+console.log(hash1 === hash2); // false (overwhelmingly likely)
+```
+
+Yahan `bcrypt.hash(password, 12)` **automatically random salt generate karta hai**. `12` bcrypt ka cost factor hai, salt nahi. Dono calls me password same hone ke baad bhi encoded hashes alag milte hain.
+
+**Important:** bcrypt ke saath manually salt add karne ki zarurat nahi. Library ko salt generation aur verification handle karne do.
 
 ---
 
 ## 8. Salt is not secret
 
-Important interview point:
+**Salt secret nahi hota.** Isko hash ke saath database me store karna normal aur safe design hai.
 
-> A salt does not need to be hidden.
+Bcrypt ka encoded hash kuch aisa dikhta hai:
 
-It is typically stored alongside the hash.
+```text
+$2b$12$...salt-and-hash-data...
+```
 
-Its job is uniqueness, not secrecy.
+Is format me algorithm version, cost, salt aur password hash ki information hoti hai. Database me poora encoded hash store karo.
+
+Login ke time:
+
+```js
+const isValid = await bcrypt.compare(
+  "hello123",
+  user.passwordHash
+);
+```
+
+`bcrypt.compare()` stored encoded hash se salt/cost details read karke password verify karta hai. **Hash decrypt nahi hota.**
+
+**Interview point:** Salt ka purpose **uniqueness** hai, secrecy nahi. Salt ko hide karna zaruri nahi; lekin password hashes ko phir bhi sensitive data ki tarah protect karna chahiye.
 
 ---
 
 ## 9. Pepper
 
-A pepper is an additional secret value stored separately from the database.
+**Pepper** password hashing process me use hone wala **additional secret** hai. Salt se difference: pepper **database se alag** rakha jata hai aur aam taur par kai users ke liye same secret use hota hai.
 
-Example:
+### Pepper ki zarurat kyu pad sakti hai?
+
+Maan lo attacker ne sirf user database chura liya. Salt aur hashes database me mil sakte hain, isliye attacker offline password guessing kar sakta hai. Agar properly designed pepper protection bhi hai aur pepper secret attacker ko **nahi** mila, to guessing ko aur mushkil banaya ja sakta hai.
 
 ```text
-password
-+
-salt
-+
-server-side pepper
+Password ---------+
+                  |
+Secret pepper ----+--> secure pepper processing
+                           |
+                           v
+                  salted password hashing
+                           |
+                           v
+                   stored password hash
 ```
 
-Pepper may add defense if DB alone is compromised.
+Ye sirf **conceptual flow** hai; actual cryptographic implementation me order aur mechanism matter karte hain. Password + pepper ko blindly concatenate karna universal best practice nahi hai. Ek established option password-hash output par secret-key HMAC lagana hai, with careful verification and rotation design.
 
-But it introduces:
-- secret management
-- rotation complexity
+### Pepper kaha store hota hai?
 
-It is optional and architecture-dependent.
+**Database me nahi.** Use secure secret manager / key-management service me rakhna better hai. Development me environment secret use ho sakta hai:
+
+```env
+PASSWORD_PEPPER=your-long-random-secret
+```
+
+Ye illustrative value hai, real production secret nahi. Pepper ko GitHub me commit mat karo. Agar pepper leak ya rotate hota hai, existing password verification/migration ko carefully handle karna padega.
+
+### Salt vs Pepper
+
+| Feature | Salt | Pepper |
+| --- | --- | --- |
+| Secret? | No | **Yes** |
+| Unique for every password hash? | **Yes** | Usually shared |
+| Stored where? | Alongside hash in database | Separately in secret storage |
+| Main purpose | Same passwords -> different hashes; stop precomputation reuse | Extra protection in a DB-only breach |
+| Required? | Essential in modern password hashing | Optional |
+| Automatically handled by bcrypt? | Yes | No |
+
+### Kya dono use karne chahiye?
+
+- **Salt:** Always use a proper password-hashing algorithm (Argon2id preferred where supported; bcrypt is an established option). The library handles salts.
+- **Pepper:** Optional extra layer if you can securely store, access and rotate the secret.
+- **Also important:** Password policy, rate limiting, monitoring, MFA and reasonable hashing cost. Pepper inka replacement nahi hai.
+
+**Interview-ready answer:**
+
+> Salt is a unique random value used during password hashing so identical passwords produce different hashes. It is not secret and is stored with the hash. Pepper is an optional secret kept outside the password database to provide an extra layer of protection if only the database is stolen.
+
+**Remember:** **Salt = uniqueness. Pepper = extra secret.**
 
 ---
 
