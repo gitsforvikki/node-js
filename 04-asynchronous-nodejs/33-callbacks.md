@@ -1,5 +1,238 @@
 # Lesson 33 — Callbacks
 
+## Start here: Callback → Callback Hell → Promise → Async/Await
+
+Simple Hinglish walkthrough. Har example ko alag run karo. `setTimeout()` database/API delay ko simulate karta hai.
+
+### 1. Callback kaise kaam karta hai?
+
+**Callback ek normal function hai jo hum doosre function ko argument mein pass karte hain.** Receiving function decide karta hai use kab execute karna hai.
+
+**Synchronous callback:**
+
+```js
+function greet(callback) {
+  console.log('Hello');
+  callback();
+}
+
+greet(() => console.log('Vikash'));
+```
+
+Output: `Hello`, phir `Vikash`. Callback hamesha asynchronous nahi hota.
+
+**Asynchronous callback:**
+
+```js
+function getUser(id, callback) {
+  console.log('2. getUser started');
+  setTimeout(() => {
+    const user = { id, name: 'Vikash' };
+    callback(null, user);
+  }, 1000);
+}
+
+console.log('1. Start');
+getUser(24, (error, user) => {
+  if (error) return console.error(error);
+  console.log('4. User:', user);
+});
+console.log('3. End');
+```
+
+Output:
+
+```text
+1. Start
+2. getUser started
+3. End
+4. User: { id: 24, name: 'Vikash' }  // ~1 second later
+```
+
+**Execution:** `getUser(24, arrowFunction)` mein arrow function sirf pass hua. `setTimeout()` timer schedule karke return ho gaya, toh `End` pehle print hua. Timer complete hone par timer callback ne `callback(null, user)` chalaya — yaani **tumhara passed arrow function invoke hua**. Node.js ka main JS thread timer ke liye block nahi hua.
+
+`callback(error, result)` classic Node.js **error-first callback** convention hai. Success: `callback(null, user)`; failure: `callback(new Error('User not found'))`.
+
+### 2. Callback Hell — complete working example
+
+E-commerce application: **get user → get their orders → get order payment**. Har next step previous result par depend karta hai.
+
+```js
+function getUser(id, callback) {
+  setTimeout(() => {
+    if (!id) return callback(new Error('Invalid user id'));
+    callback(null, { id, name: 'Vikash' });
+  }, 1000);
+}
+
+function getOrders(userId, callback) {
+  setTimeout(() => {
+    callback(null, [{ id: 101, userId, product: 'Laptop' }]);
+  }, 1000);
+}
+
+function getPayment(orderId, callback) {
+  setTimeout(() => {
+    callback(null, { orderId, status: 'SUCCESS', amount: 50000 });
+  }, 1000);
+}
+
+getUser(24, (error, user) => {
+  if (error) return console.error(error);
+  console.log('User:', user.name);
+
+  getOrders(user.id, (error, orders) => {
+    if (error) return console.error(error);
+    console.log('Order:', orders[0].product);
+
+    getPayment(orders[0].id, (error, payment) => {
+      if (error) return console.error(error);
+      console.log('Payment:', payment.status);
+    });
+  });
+});
+```
+
+Output (approximately 1 second gap per line):
+
+```text
+User: Vikash
+Order: Laptop
+Payment: SUCCESS
+```
+
+```mermaid
+flowchart TD
+    A[getUser] --> B[User callback]
+    B --> C[getOrders]
+    C --> D[Orders callback]
+    D --> E[getPayment]
+    E --> F[Payment callback]
+```
+
+**Callback Hell** ka problem: agar 6–7 dependent tasks hain, callbacks ek-doosre ke andar deeply nested ho jate hain. Readability, debugging aur repeated error checks difficult ho sakte hain. Yeh primarily code organization problem hai, performance problem nahi. Named callback functions mein code split karna bhi nesting kam kar sakta hai.
+
+### 3. Promise se Callback Hell kaise avoid karein?
+
+**Important:** Callback-based `getUser(id, callback)` ko direct `.then()` ke saath use nahi kar sakte. Naye functions **Promise return** karenge. Yahan same three functions ki **Promise-based definitions** hain.
+
+```js
+function getUser(id) {
+  return new Promise((resolve, reject) => {
+    setTimeout(() => {
+      if (!id) return reject(new Error('Invalid user id'));
+      resolve({ id, name: 'Vikash' });
+    }, 1000);
+  });
+}
+
+function getOrders(userId) {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      resolve([{ id: 101, userId, product: 'Laptop' }]);
+    }, 1000);
+  });
+}
+
+function getPayment(orderId) {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      resolve({ orderId, status: 'SUCCESS', amount: 50000 });
+    }, 1000);
+  });
+}
+
+getUser(24)
+  .then((user) => {
+    console.log('User:', user.name);
+    return getOrders(user.id);
+  })
+  .then((orders) => {
+    console.log('Order:', orders[0].product);
+    return getPayment(orders[0].id);
+  })
+  .then((payment) => {
+    console.log('Payment:', payment.status);
+  })
+  .catch((error) => console.error('Error:', error.message));
+```
+
+Output:
+
+```text
+User: Vikash
+Order: Laptop
+Payment: SUCCESS
+```
+
+**Difference:** Callback API `getUser(id, callback)` result ko `callback(null, user)` se deta tha. Promise API `getUser(id)` ek Promise return karta hai: `resolve(user)` success, `reject(error)` failure. `.then()` result handle karta hai aur `.catch()` rejection.
+
+**`return getOrders(user.id)` kyun?** Uske returned Promise ko chain mein forward karna zaroori hai. Agar `return` hata doge, next `.then((orders) => ...)` ko `undefined` milega.
+
+**Relation:** `.then((user) => {...})` mein arrow function bhi ek callback hai. Promise callbacks ko eliminate nahi karta — unhe organized way mein manage karta hai.
+
+### 4. Same functions ko async/await aur try/catch ke saath use karo
+
+**Definitions bilkul SAME rahengi as section 3.** Promise-based `getUser`, `getOrders`, `getPayment` ko dubara define karne ki zaroorat nahi.
+
+```js
+// Pehle section 3 ke Promise-based definitions use karo.
+async function getPaymentDetails() {
+  try {
+    const user = await getUser(24);
+    console.log('User:', user.name);
+
+    const orders = await getOrders(user.id);
+    console.log('Order:', orders[0].product);
+
+    const payment = await getPayment(orders[0].id);
+    console.log('Payment:', payment.status);
+  } catch (error) {
+    console.error('Error:', error.message);
+  }
+}
+
+getPaymentDetails();
+```
+
+Output:
+
+```text
+User: Vikash
+Order: Laptop
+Payment: SUCCESS
+```
+
+`async` function **always Promise return** karta hai. `await` current async function ko suspend karta hai jab tak Promise settle na ho; normally Node.js main JavaScript thread block nahi hota. Promise reject ho toh `await` error throw karta hai, jise `try/catch` handle kar sakta hai.
+
+**Try the error case:** `await getUser(0)` likho. `reject(new Error('Invalid user id'))` hoga, orders aur payment skip honge, aur `catch` print karega:
+
+```text
+Error: Invalid user id
+```
+
+**Yaad rakho:** Async/await Promise ka replacement nahi hai. Same Promise-returning functions ko readable syntax mein consume karta hai. Ye three dependent operations sequentially run hote hain.
+
+### 5. Quick comparison
+
+| Callback | Promise | Async/Await |
+| --- | --- | --- |
+| Function argument pass karo | Promise return karo | Same Promise function use karo |
+| `callback(null, user)` | `resolve(user)` | `const user = await getUser(24)` |
+| `callback(error)` | `reject(error)` / `.catch()` | `try/catch` |
+| Deep nesting possible | `.then()` chain | Sequential-looking code |
+
+### 6. Practice questions
+
+1. Async callback example mein `End` pehle kyun aaya?
+2. `callback(null, user)` mein `null` ka role kya hai?
+3. `.then()` mein `return getOrders(user.id)` hataoge toh kya hoga?
+4. `await getUser(0)` par `try` ya `catch` mein se kaunsa handle karega?
+
+---
+
+## More details from the original lesson
+
 ## Why callbacks matter
 
 Callbacks are one of the foundations of asynchronous Node.js.
