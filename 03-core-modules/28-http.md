@@ -447,23 +447,445 @@ Common examples:
 500 Internal Server Error
 ```
 
-## Headers
+## Headers — Complete Guide (Basic to Advanced)
 
-Examples:
+HTTP headers samajhna Node.js, Express, React aur REST APIs ke liye important hai.
+
+### 1. HTTP Header Kya Hota Hai?
+
+**Headers additional information (metadata)** hain jo client aur server HTTP request/response ke saath exchange karte hain. Ye batate hain ki body ka format kya hai, authentication kaise pass ho rahi hai, cache policy kya hai, etc.
+
+Example (React):
+
+```js
+fetch("http://localhost:3000/users", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ name: "Vikash", age: 25 }),
+});
+```
+
+`Content-Type: application/json` server ko batata hai ki body JSON format mein hai. **Header JSON conversion nahi karta**; `JSON.stringify()` karta hai.
+
+### 2. HTTP Request Ka Structure
+
+HTTP/1.1 request ko conceptually aise samjho:
+
+```http
+POST /users HTTP/1.1
+Host: localhost:3000
+Content-Type: application/json
+Authorization: Bearer token123
+
+{"name":"Vikash","age":25}
+```
+
+1. **Request line**: Method, path aur HTTP version.
+2. **Headers**: Request ki metadata (e.g. Content-Type, Authorization).
+3. **Empty line**: Headers aur body separate karti hai.
+4. **Body**: Actual user data.
+
+**Graphics — request ke parts:**
+
+```mermaid
+flowchart TD
+    A["HTTP request"] --> B["Request line: POST /users"]
+    A --> C["Headers: Content-Type, Authorization"]
+    A --> D["Body: JSON user data"]
+```
+
+Ye HTTP/1.1 ka readable representation hai; HTTP/2 aur HTTP/3 ka wire format different hota hai.
+
+### 3. Request Headers vs Response Headers
+
+```mermaid
+sequenceDiagram
+    participant Client as React / Browser
+    participant Server as Node.js
+    Client->>Server: HTTP request + Request Headers
+    Server-->>Client: HTTP response + Response Headers
+```
+
+| Request headers | Response headers |
+| --- | --- |
+| Client server ko bhejta hai | Server client ko bhejta hai |
+| Request processing ki information | Response handling ki information |
+| `Authorization`, `Accept`, `Cookie` | `Set-Cookie`, `Cache-Control`, `Content-Security-Policy` |
+
+`Content-Type` aur `Content-Encoding` jaise headers dono directions mein use ho sakte hain.
+
+### 4. Important Request Headers
+
+#### A. Content-Type — Main Kya Bhej Raha Hoon?
+
+```js
+fetch("/api/users", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ name: "Vikash" }),
+});
+```
+
+| Value | Body ka format |
+| --- | --- |
+| `application/json` | JSON |
+| `text/plain` | Plain text |
+| `application/x-www-form-urlencoded` | URL-encoded form |
+| `multipart/form-data` | File uploads + form fields |
+| `application/xml` | XML |
+
+**Note:** `FormData` ko browser `fetch` se bhejte waqt manually `multipart/form-data` set mat karo; browser boundary ke saath sahi header set karta hai.
+
+#### B. Accept — Mujhe Kis Format Mein Response Chahiye?
+
+```js
+fetch("/api/users", {
+  headers: { Accept: "application/json" },
+});
+```
+
+- **Content-Type** = Main kya bhej raha hoon?
+- **Accept** = Mujhe kis format mein response chahiye?
+
+Server content negotiation support karta ho toh preference consider kar sakta hai; `Accept` bhejne se JSON response guaranteed nahi hota.
+
+#### C. Authorization — Protected API Credentials
+
+```js
+fetch("/api/profile", {
+  headers: {
+    Authorization: `Bearer \${accessToken}`,
+  },
+});
+```
+
+Node.js:
+
+```js
+const authHeader = req.headers.authorization;
+console.log(authHeader); // Bearer eyJhbGciOi...
+```
+
+Common cases: JWT, OAuth bearer tokens, Basic auth. **HTTPS, token validation, expiry aur authorization checks** bhi required hain. Real access tokens ko logs mein print na karo.
+
+#### D. Cookie — Browser Se Server
+
+HTTP request:
+
+```http
+GET /profile HTTP/1.1
+Host: example.com
+Cookie: sessionId=abc123
+```
+
+Browser stored cookies ko applicable requests par automatically attach kar sakta hai. Frontend JavaScript manually `Cookie` request header set nahi kar sakta. Cross-origin `fetch` mein cookie behavior ke liye credentials/CORS rules bhi matter karte hain.
+
+#### E. Origin — Request Kis Origin Se Aayi?
+
+```http
+Origin: http://localhost:5173
+```
+
+Example: React `http://localhost:5173`, Node `http://localhost:3000`. Ports different hone se origins different hain. Browser cross-origin access par CORS enforce karta hai. `Origin` header har request par zaroori nahi hota.
+
+#### F. User-Agent — Client Ki Information
+
+```http
+User-Agent: Mozilla/5.0 ...
+```
+
+Analytics/compatibility ke liye useful, lekin spoof ho sakta hai: authentication ka reliable proof nahi.
+
+### 5. Important Response Headers
+
+Example:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+Cache-Control: no-store
+
+{"success":true,"name":"Vikash"}
+```
+
+#### A. Content-Type — Response Body Ka Format
+
+```js
+res.setHeader("Content-Type", "application/json");
+res.end(JSON.stringify({ success: true }));
+```
+
+#### B. Set-Cookie — Browser Ko Cookie Store Karne Ki Instruction
 
 ```js
 res.setHeader(
-  "Cache-Control",
-  "no-store"
-);
-
-res.setHeader(
-  "Content-Type",
-  "application/json"
+  "Set-Cookie",
+  "sessionId=abc123; HttpOnly; Secure; SameSite=Lax; Path=/"
 );
 ```
 
-Headers communicate metadata about the message.
+- `HttpOnly`: JavaScript access restrict karta hai.
+- `Secure`: HTTPS par send hoti hai (localhost exceptions possible).
+- `SameSite=Lax`: Kuch cross-site sending restrict karta hai.
+- `Path=/`: Cookie ka path scope.
+
+Real session IDs unpredictable aur server-validated hone chahiye. `HttpOnly` CSRF se complete protection nahi deta.
+
+#### C. Cache-Control — Caching Policy
+
+```js
+res.setHeader("Cache-Control", "no-store");
+```
+
+| Directive | Meaning |
+| --- | --- |
+| `no-store` | Response store na karo |
+| `no-cache` | Reuse se pehle validate karo |
+| `public` | Shared caches bhi store kar sakte hain |
+| `private` | Shared cache store na kare |
+| `max-age=3600` | Response 3600 seconds tak fresh ho sakta hai |
+
+Example: Public product listing caching ke liye suitable ho sakti hai; sensitive account data ke liye `no-store` useful hai.
+
+#### D. CORS Response Headers
+
+```http
+Access-Control-Allow-Origin: http://localhost:5173
+Access-Control-Allow-Methods: GET, POST
+Access-Control-Allow-Headers: Content-Type, Authorization
+```
+
+Browser ko batate hain ki kaunse cross-origin accesses allowed hain. Credentials ke saath wildcard `*` origin use nahi kar sakte. CORS browser enforcement hai, server-side authorization ka replacement nahi.
+
+#### E. Security Headers
+
+| Header | Purpose |
+| --- | --- |
+| `Content-Security-Policy` | Resource loading restrict |
+| `Strict-Transport-Security` | HTTPS policy |
+| `X-Content-Type-Options` | MIME sniffing restrict |
+| `Referrer-Policy` | Referrer information control |
+| `Permissions-Policy` | Browser feature permissions |
+
+Express apps mein `helmet` middleware commonly security headers configure karta hai.
+
+### 6. Node.js Mein Request Headers Read Karna
+
+```js
+import http from "node:http";
+
+const server = http.createServer((req, res) => {
+  console.log("All headers:", req.headers);
+  console.log("Content-Type:", req.headers["content-type"]);
+  console.log("Authorization present:", Boolean(req.headers.authorization));
+  res.end("Headers received");
+});
+
+server.listen(3000, () => {
+  console.log("Server running on port 3000");
+});
+```
+
+Node.js `req.headers` mein header names generally lowercase normalize karta hai:
+
+```js
+req.headers["content-type"]; // correct
+req.headers["Content-Type"]; // usually undefined
+```
+
+### 7. Node.js Mein Response Headers Set Karna
+
+**Method 1 — setHeader():**
+
+```js
+res.statusCode = 200;
+res.setHeader("Content-Type", "application/json");
+res.setHeader("Cache-Control", "no-store");
+res.end(JSON.stringify({ success: true }));
+```
+
+**Method 2 — writeHead():**
+
+```js
+res.writeHead(200, {
+  "Content-Type": "application/json",
+  "Cache-Control": "no-store",
+});
+res.end(JSON.stringify({ success: true }));
+```
+
+`setHeader()` header set/modify karta hai; `writeHead()` status aur headers specify karke headers send karna initiate karta hai. Headers send hone ke baad unhe normally change nahi kar sakte.
+
+### 8. Complete Practical Example — React + Node.js
+
+**Backend: server.js**
+
+```js
+import http from "node:http";
+
+const server = http.createServer((req, res) => {
+  if (req.method === "POST" && req.url === "/users") {
+    console.log("Content-Type:", req.headers["content-type"]);
+
+    let body = "";
+
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+
+    req.on("end", () => {
+      let user;
+      try {
+        user = JSON.parse(body);
+      } catch {
+        res.writeHead(400, {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "http://localhost:5173",
+        });
+        return res.end(JSON.stringify({ error: "Invalid JSON" }));
+      }
+
+      res.writeHead(201, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+        "Access-Control-Allow-Origin": "http://localhost:5173",
+      });
+
+      res.end(JSON.stringify({
+        success: true,
+        data: user,
+      }));
+    });
+
+    req.on("error", (error) => {
+      console.error("Request error:", error);
+      if (!res.headersSent) res.writeHead(400);
+      if (!res.writableEnded) res.end("Request failed");
+    });
+
+    return;
+  }
+
+  // Browser preflight for cross-origin JSON POST
+  if (req.method === "OPTIONS" && req.url === "/users") {
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": "http://localhost:5173",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    });
+    return res.end();
+  }
+
+  res.writeHead(404);
+  res.end("Not Found");
+});
+
+server.listen(3000, () => {
+  console.log("Server running on port 3000");
+});
+```
+
+**Frontend:**
+
+```js
+async function createUser() {
+  const response = await fetch("http://localhost:3000/users", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ name: "Vikash", age: 25 }),
+  });
+
+  const data = await response.json();
+  console.log(data);
+}
+
+createUser();
+```
+
+**Expected response body:**
+
+```json
+{
+  "success": true,
+  "data": { "name": "Vikash", "age": 25 }
+}
+```
+
+**Flow graphics:**
+
+```mermaid
+sequenceDiagram
+    participant React
+    participant Node as Node.js Server
+    React->>Node: OPTIONS /users (CORS preflight)
+    Node-->>React: 204 + CORS response headers
+    React->>Node: POST /users + Content-Type + JSON body
+    Node->>Node: Read headers and body, parse JSON
+    Node-->>React: 201 + Content-Type + Cache-Control + JSON
+```
+
+Production mein request size limits, aborted connections, robust validation aur stricter CORS policies bhi handle karo.
+
+### 9. HTTP Headers Ke Benefits
+
+1. **Content handling:** Body format communicate hota hai.
+2. **Authentication:** Credentials/token pass kiye ja sakte hain.
+3. **Caching:** Network requests aur server load reduce ho sakta hai.
+4. **Security:** Browser behavior aur resource loading restrictions.
+5. **CORS:** Browser cross-origin access rules.
+6. **Content negotiation:** Preferred formats/languages.
+7. **Performance:** Compression aur cache policies communicate hoti hain.
+
+### 10. Important Header Differences — Interview Table
+
+| Header | Simple meaning |
+| --- | --- |
+| `Content-Type` | Body ka media type |
+| `Accept` | Preferred response media type |
+| `Authorization` | Client credentials |
+| `Cookie` | Client → server cookies |
+| `Set-Cookie` | Server → client cookie instructions |
+| `Origin` | Request initiating origin |
+| `Cache-Control` | Caching behavior |
+| `Content-Encoding` | Applied compression/encoding |
+| `Accept-Encoding` | Supported encodings |
+| `Location` | Redirect/created resource location |
+
+### 11. Browser DevTools Mein Headers Inspect Karna
+
+1. Browser mein application kholo.
+2. `F12` → **Network** tab.
+3. API request trigger karo.
+4. Request select karke **Headers** section kholo.
+5. Request Headers, Response Headers, status aur URL inspect karo.
+
+### 12. Practice Questions
+
+**Q1. `Content-Type: application/json` kya batata hai?**  
+Body JSON format mein hai. Header khud conversion nahi karta.
+
+**Q2. JWT access token generally kis header mein bhejte hain?**  
+`Authorization: Bearer <token>`.
+
+**Q3. `Cookie` vs `Set-Cookie`?**  
+`Cookie` client se server; `Set-Cookie` server se browser.
+
+**Q4. Incoming Content-Type Node.js mein kaise read karoge?**  
+`req.headers["content-type"]`.
+
+**Q5. `Accept` vs `Content-Type`?**  
+`Accept` preferred response format; `Content-Type` current message body ka format.
+
+### Final Mental Model
+
+**Body** actual content carry karti hai; **headers** content aur HTTP communication ko interpret, authenticate, cache, negotiate aur secure karne ki metadata/instructions provide karte hain.
+
+Headers mein generally metadata/credentials hote hain; large application data body mein bhejte hain. Header size limits bhi hoti hain.
+
+**Next related topic:** CORS aur preflight OPTIONS request.
 
 ## Keep-Alive
 
