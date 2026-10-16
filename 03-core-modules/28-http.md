@@ -56,16 +56,18 @@ Node.js request body ko stream ki tarah read karta hai. Data **ek ya multiple ch
 ```mermaid
 flowchart TD
     A["HTTP POST Request"] --> B["Readable request stream: req"]
-    B --> C["Chunk 1: {\"name\":"]
-    B --> D["Chunk 2: \"Vikash\","]
-    B --> E["Chunk 3: \"age\":25}"]
-    C --> F["data event → body += chunk"]
+    B --> C["Chunk 1: opening JSON and name key"]
+    B --> D["Chunk 2: customer name and separator"]
+    B --> E["Chunk 3: age and closing JSON"]
+    C --> F["data event: append chunk to body"]
     D --> F
     E --> F
-    F --> G["end event → console.log(body)"]
+    F --> G["end event: print complete body"]
 ```
 
-GitHub Mermaid diagram ko graphics ki tarah render karta hai. Agar diagram render na ho, ye plain-text version dekho:
+Ye Mermaid flowchart GitHub par render hona chahiye. Chunk labels ko readable rakha hai; exact JSON fragments niche ke code aur output examples mein diye gaye hain.
+
+**Same flow in plain-text form (fallback/reference):**
 
 ```text
 HTTP POST request
