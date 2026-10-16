@@ -456,15 +456,149 @@ We will go deeper into this in upcoming lessons.
 
 ## 15. Event loop starvation
 
-The event loop can be starved when higher-priority queues keep receiving work continuously.
+### 15.1 Starvation kya hota hai? (Simple meaning)
 
-Example patterns:
+**Event Loop Starvation** tab hota hai jab baar-baar schedule hone wale callbacks/microtasks Node.js ko agle event-loop phases tak pahunchne ka chance nahi dete. Isliye ready timers, I/O callbacks aur requests wait kar sakte hain.
 
-- recursive `process.nextTick()`
-- huge microtask chains
-- long synchronous loops
+Real-life example: Restaurant mein waiter baar-baar Customer A ka kaam kar raha hai; Customer B aur C wait kar rahe hain. Node.js mein bhi ek endlessly replenished high-priority queue doosre callbacks ko wait karwa sakti hai.
 
-If the event loop cannot progress to later phases, timers and I/O callbacks may be delayed.
+**Important difference:**
+
+- **Blocking:** Ek long synchronous CPU-heavy function main thread busy rakhta hai (jaise 5-second `while` loop).
+- **Starvation:** Bahut saare callbacks/microtasks ek-doosre ko schedule karte rehte hain, jis se doosre phases ki turn nahi aati.
+- Dono timers aur incoming requests delay kar sakte hain. Broadly starvation mein long synchronous tasks bhi contribute kar sakte hain, lekin `process.nextTick()` recursion ek especially clear example hai.
+
+### 15.2 Working example — `process.nextTick()` repeatedly schedule hona
+
+**Complete runnable code (`node starvation.js`):**
+
+```js
+console.log('Start');
+
+setTimeout(() => {
+  console.log('Timer executed');
+}, 0);
+
+let count = 0;
+
+function repeat() {
+  count++;
+  console.log('nextTick:', count);
+
+  if (count < 5) {
+    process.nextTick(repeat);
+  }
+}
+
+process.nextTick(repeat);
+console.log('End');
+```
+
+**Expected output (Node.js CommonJS file):**
+
+```text
+Start
+End
+nextTick: 1
+nextTick: 2
+nextTick: 3
+nextTick: 4
+nextTick: 5
+Timer executed
+```
+
+**Execution step-by-step:**
+
+1. `Start` print hota hai.
+2. `setTimeout(..., 0)` timer schedule karta hai. `0` ka matlab immediately execute karna **nahi** hai.
+3. `process.nextTick(repeat)` callback ko next-tick queue mein schedule karta hai.
+4. Current synchronous code se `End` print hota hai.
+5. Node.js next-tick queue drain karta hai. `repeat()` ke andar fir se `process.nextTick(repeat)` schedule hota hai.
+6. Count 5 hone tak ye chain chalti hai. Uske baad timer callback execute ho sakta hai.
+
+> This exact order is intended for a normal Node.js **CommonJS** script. In an ES module's top-level execution, Promise microtask/`nextTick` ordering can differ. The important idea here is how a recursive next-tick chain delays timers.
+
+### 15.3 Actual starvation — jab recursion kabhi stop na ho
+
+```js
+setTimeout(() => {
+  console.log('Timer executed');
+}, 0);
+
+function repeat() {
+  // No log here to avoid flooding the terminal.
+  process.nextTick(repeat);
+}
+
+process.nextTick(repeat);
+```
+
+**Behavior:** Timer callback ko execution ka chance nahi milega as long as the infinite `nextTick` chain continues. Process unresponsive/high CPU ho sakta hai. Test karte waqt `Ctrl + C` se stop karo.
+
+**Why?** Har `repeat()` fir next-tick queue mein ek callback daal raha hai. Node.js baar-baar us queue ko drain karta hai aur timer phase tak progress nahi kar pata.
+
+```mermaid
+flowchart TD
+    A[Schedule nextTick repeat] --> B[Execute repeat]
+    B --> C[Schedule nextTick again]
+    C --> B
+    B -.Timer phase does not get a turn.-> D[Pending timer callback]
+```
+
+**Promise microtask chain** ka bhi similar effect ho sakta hai, agar wo continuously naye microtasks schedule kare aur event loop ko yield na kare.
+
+### 15.4 Solution — Event Loop ko yield karo (`setImmediate`)
+
+Kaam ko **small chunks** mein divide karo aur har chunk ke baad `setImmediate()` se next turn schedule karo. Isse Node.js ko timers/I/O ko service karne ke opportunities milti hain.
+
+```js
+let count = 0;
+
+function repeat() {
+  count++;
+  console.log('Working:', count);
+
+  if (count < 5) {
+    setImmediate(repeat);
+  }
+}
+
+setTimeout(() => {
+  console.log('Timer executed');
+}, 0);
+
+setImmediate(repeat);
+```
+
+**Possible output:**
+
+```text
+Timer executed
+Working: 1
+Working: 2
+Working: 3
+Working: 4
+Working: 5
+```
+
+**Important:** Top-level `setTimeout(..., 0)` vs `setImmediate()` ka relative order **guaranteed nahi** hai. Kisi run mein `Working: 1` timer se pehle bhi aa sakta hai; important part ye hai ki `setImmediate` chain timers ko indefinitely starve nahi karti.
+
+`setImmediate()` synchronous CPU-heavy code ko non-blocking **nahi** banata. Agar ek chunk hi bohot heavy hai, use further split karo ya CPU-intensive kaam ke liye Worker Threads consider karo.
+
+### 15.5 Blocking vs Starvation — quick comparison
+
+| Event loop blocking | Event loop starvation |
+| --- | --- |
+| Ek long synchronous task main JS thread occupy karta hai | High-priority callbacks/microtasks repeatedly schedule hote hain |
+| Example: `while` loop 5 seconds tak | Example: endless `process.nextTick(repeat)` |
+| Callback tab chalega jab heavy task finish hoga | Timer/I/O tabhi chance paayenge jab chain yield/end kare |
+| Fix: reduce/split CPU work, Worker Threads | Fix: break chains, yield via `setImmediate`, use bounded work |
+
+### 15.6 Interview answer
+
+> Event loop starvation occurs when continuously queued high-priority callbacks or microtasks prevent the Node.js event loop from progressing to other phases, delaying timers and I/O. A recursive `process.nextTick()` chain is a common example. Avoid it by breaking up work and yielding control, for example using `setImmediate()`.
+
+**Practice:** Agar `process.nextTick()` callback khud ko forever schedule kare aur `setTimeout(..., 0)` bhi registered ho, kya timer run hoga? **Nahi**, jab tak uninterrupted chain chalti rahegi.
 
 ---
 
