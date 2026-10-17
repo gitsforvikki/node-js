@@ -118,3 +118,72 @@ This is safe because the SQL fragment comes from **hardcoded developer-controlle
 4. What is the purpose of the `[email]` array in `pool.query(sql, [email])`?
 
 **Interview answer:** SQL injection is when untrusted input becomes SQL instructions. Parameterized queries prevent this by separating query structure from values; validation and least-privilege database permissions provide additional protection.
+
+---
+
+## 7. Understand the attack with a simple mental model
+
+Suppose a developer builds `WHERE email = 'USER_INPUT'` by concatenating strings. An attacker can include SQL punctuation so the database interprets some input as **instructions**, not as the email value. This can change filtering or expose unauthorized rows.
+
+With `WHERE email = $1`, the database receives a fixed query and a separate value. Even unusual punctuation is compared as **data**.
+
+**Key point:** Escaping quotes manually is error-prone. Parameter binding is the default defense.
+
+## 8. Parameterize UPDATE, INSERT, DELETE too
+
+```js
+// Safe INSERT
+await pool.query(
+  "INSERT INTO users (email, name) VALUES ($1, $2)",
+  [email, name]
+);
+
+// Safe UPDATE, also scoped to authenticated owner
+await pool.query(
+  "UPDATE users SET name = $1 WHERE id = $2",
+  [name, req.user.id]
+);
+
+// Safe DELETE
+await pool.query(
+  "DELETE FROM sessions WHERE user_id = $1 AND id = $2",
+  [req.user.id, sessionId]
+);
+```
+
+Injection safety and **authorization** are different: a parameterized query can still return another user's data if you forget ownership checks.
+
+## 9. LIKE searches and wildcard characters
+
+Parameterized SQL prevents injection, but `%` and `_` still act as **LIKE wildcards**. If the user intends a literal search, escape wildcard characters too:
+
+```js
+const escaped = term.replace(/[\\%_]/g, "\\$&");
+const result = await pool.query(
+  "SELECT id, name FROM products WHERE name ILIKE $1 ESCAPE '\\'",
+  [`%${escaped}%`]
+);
+```
+
+If wildcard search is intended, document it and bound input length/result count.
+
+## 10. Transactions, ORMs, and stored procedures
+
+- **Transactions** make related writes atomic; they do **not** automatically prevent injection.
+- **ORM/query builders** are safe when they bind values correctly; unsafe raw SQL string interpolation can still introduce injection.
+- **Stored procedures** are not automatically safe if they construct dynamic SQL with untrusted strings.
+
+Example with a query builder: use parameterized expressions, not user-controlled raw SQL snippets.
+
+## 11. Second-order SQL injection
+
+Sometimes unsafe input is **stored first** and later used to build a query. Being saved in a database does not make a string trustworthy. Always parameterize it when using it in SQL later.
+
+## 12. How to test your own API
+
+- Send quotes and unusual punctuation in search terms; they should be treated as data or rejected by validation.
+- Check the API does not expose raw SQL errors.
+- Verify database user has only required table permissions.
+- Test sort-field allowlists and search pagination.
+
+**Interview takeaway:** Injection can occur in SELECT, UPDATE, INSERT, DELETE, raw ORM queries, and later queries built from stored data. Bind **values**; allowlist **identifiers and SQL fragments**.
