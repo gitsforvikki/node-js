@@ -109,3 +109,69 @@ This is a minimal example. In production, distinguish expected client errors fro
 4. Explain why hiding the Delete button in React does **not** secure a backend DELETE API.
 
 **Interview answer:** API security is layers of protection: secure transport, authentication, authorization, validation, safe database access, rate limiting, and careful error handling. The backend must enforce permissions even if the frontend hides actions.
+
+---
+
+## 8. Authentication vs authorization vs ownership (important)
+
+Authentication asks **who sent the request?** Authorization asks **may they do this action?** Ownership asks **does this specific record belong to them?**
+
+Example: Alice and Bob both have valid tokens. Alice must not be able to edit Bob's order just by changing `/orders/101` to `/orders/102`. This is **broken object-level authorization (BOLA / IDOR)**.
+
+```js
+app.patch("/orders/:id", requireAuth, async (req, res) => {
+  const order = await Order.findOne({
+    _id: req.params.id,
+    userId: req.user.id, // Filter by owner, not just order ID
+  });
+  if (!order) return res.status(404).json({ message: "Not found" });
+  // Validate allowed update fields before applying changes.
+  res.json({ id: order.id });
+});
+```
+
+A valid JWT alone is **not** permission to access every record. Also check role/function permissions (for example, ordinary users cannot call admin endpoints).
+
+## 9. Mass assignment and excessive data exposure
+
+**Mass assignment:** client submits fields you never intended to allow, like `role: "admin"`.
+
+```js
+// BAD
+await User.findByIdAndUpdate(req.user.id, req.body);
+
+// BETTER: validate and choose allowed fields
+const parsed = z.strictObject({
+  displayName: z.string().trim().min(1).max(60),
+}).safeParse(req.body);
+if (!parsed.success) return res.sendStatus(400);
+await User.findByIdAndUpdate(req.user.id, {
+  $set: { displayName: parsed.data.displayName },
+});
+```
+
+**Excessive data exposure:** returning `res.json(user)` might leak `passwordHash`, recovery tokens, internal flags, or private data. Use explicit projections and response DTOs.
+
+## 10. Security is layers, not one package
+
+- **TLS/HTTPS:** protects data while traveling over the network.
+- **Secure sessions/tokens:** identify the requester; validate signature, expiry and intended audience when applicable.
+- **Authorization:** checks every sensitive action and resource.
+- **Validation + safe database queries:** blocks malformed input and injection.
+- **Rate limits and timeouts:** reduce abuse and resource exhaustion.
+- **Logging/monitoring:** detect suspicious failures without logging passwords or tokens.
+- **Updates and least privilege:** reduce the impact of vulnerabilities.
+
+**Threat-model habit:** For each endpoint ask: Who can call it? Which data can they read/write? What if the input is huge, missing, malicious, or repeated 10,000 times?
+
+## 11. Security test cases
+
+Try these with your own test account:
+1. Call a protected endpoint without credentials → expect 401.
+2. Call another user's resource with your valid credentials → expect 403/404.
+3. Add `role: "admin"` to profile update → rejected/ignored.
+4. Submit a very large body → bounded request size.
+5. Trigger a server error → no stack trace or secret in response.
+6. Call login repeatedly → throttling and monitoring.
+
+**Next:** Lesson 137 validates input; Lessons 138–139 secure database queries; later lessons cover XSS, CSRF, CORS and security headers.
