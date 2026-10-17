@@ -374,6 +374,23 @@ const users = await User.find(); // excludes isDeleted: true
 
 This hook changes only `find()` queries; it does not automatically apply to `findOne()` or every other read method. Add the relevant hooks if you want that behavior across other query methods.
 
+#### Custom query method (query helper): `onlyActive()`
+
+A **query helper** is different from query middleware: you define it using `schema.query` and **call it yourself** when building a query. You can call it in a controller or service, not only inside the schema file.
+
+```js
+// models/user.model.js — define BEFORE mongoose.model()
+userSchema.query.onlyActive = function () {
+  return this.where({ active: true });
+};
+
+// controllers/user.controller.js — use the exported User model
+const users = await User.find().onlyActive();
+// Same filter as User.find({ active: true })
+```
+
+**Flow:** `User.find()` creates a query → `onlyActive()` adds the filter → `await` executes the query. Here `this` is the query object. Unlike `pre("find")`, `onlyActive()` does **not** run automatically; it runs only when you call it. (The schema must also contain an `active` Boolean field.)
+
 ### C. Important: save hooks do not run on query updates
 
 ```js
@@ -461,6 +478,32 @@ if (!user || !(await user.comparePassword(inputPassword))) {
 **How it works:** `user.comparePassword(...)` uses `this.passwordHash` from **that user document**. `bcrypt.compare()` checks the plaintext candidate against the stored hash; never compare plaintext passwords directly.
 
 **Remember:** Instance methods are available on Mongoose documents, not on plain objects returned by `lean()`. Keep complex business workflows in services rather than adding everything to the model.
+
+### Simple instance method: `isAdult()`
+
+Define the method on the schema, then call it on any **Mongoose document**, including inside a controller or service.
+
+```js
+// models/user.model.js — define BEFORE mongoose.model()
+const userSchema = new mongoose.Schema({
+  name: String,
+  age: Number,
+});
+
+userSchema.methods.isAdult = function () {
+  return this.age >= 18;
+};
+
+const User = mongoose.model("User", userSchema);
+
+const user1 = new User({ name: "Vikash", age: 24 });
+const user2 = new User({ name: "Rahul", age: 17 });
+
+console.log(user1.isAdult()); // true
+console.log(user2.isAdult()); // false
+```
+
+**Why:** `this` refers to the document calling the method, so each user checks their own age. You can also fetch a user in a controller with `await User.findById(id)` and call `user.isAdult()` after checking that the user exists. Do not call it on a `lean()` result.
 
 ---
 
