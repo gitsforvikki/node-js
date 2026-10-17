@@ -1,5 +1,198 @@
 # Lesson 107 — MongoDB Integration
 
+## Start here — MongoDB, MongoDB Atlas, and Mongoose (simple English)
+
+Before learning MongoDB queries, understand **three different things**:
+
+| Name | What is it? | What does it do? |
+| --- | --- | --- |
+| **MongoDB** | A NoSQL database system | Stores and retrieves data as documents |
+| **MongoDB Atlas** | A cloud service for MongoDB | Runs and manages MongoDB databases online |
+| **Mongoose** | An ODM library for Node.js | Makes working with MongoDB easier using schemas and models |
+
+**Think of an e-commerce app:** MongoDB stores users, products, and orders. Atlas can host that database in the cloud. Mongoose helps your Express application save and read those records.
+
+You **do not need Mongoose** to use MongoDB: the official `mongodb` Node.js driver also works. You **do not need Atlas** to run MongoDB: you can run MongoDB locally or on your own server.
+
+### 1. How are they connected?
+
+```text
+React frontend
+    |
+    | HTTP request
+    v
+Node.js + Express backend
+    |
+    v
+Mongoose (ODM)
+    |
+    v
+MongoDB Node.js driver (used internally by Mongoose)
+    |
+    v
+MongoDB database (hosted on Atlas, or running elsewhere)
+    |
+    +--> users collection
+    +--> products collection
+    +--> orders collection
+```
+
+React sends requests to Express. Express calls Mongoose methods, and Mongoose uses the driver to communicate with MongoDB.
+
+### 2. What do you create when you sign up for MongoDB Atlas?
+
+A typical Atlas structure looks like this:
+
+```text
+MongoDB Atlas account (used to log in)
+    |
+    +--> Organization
+           |
+           +--> Project
+                  |
+                  +--> Cluster / MongoDB deployment
+                         |
+                         +--> Database: shophub
+                         |      +--> Collection: users
+                         |      +--> Collection: products
+                         |      +--> Collection: orders
+                         |
+                         +--> Database: codebuddy
+                                +--> Collection: users
+                                +--> Collection: connections
+                                +--> Collection: messages
+```
+
+- **Atlas account:** Your login for the Atlas website.
+- **Organization:** Groups Atlas projects and members.
+- **Project:** Groups database deployments and other Atlas resources.
+- **Cluster/deployment:** The MongoDB servers that run your databases.
+- **Database:** A group of collections, such as `shophub`.
+- **Collection:** A group of documents of the same general type, such as `users`.
+- **Document:** One stored data record, such as one user.
+
+A collection belongs to a **database**, and the database lives inside your MongoDB deployment. A MongoDB deployment may contain multiple databases.
+
+### 3. What is inside a collection?
+
+```text
+Database: shophub
+    |
+    +--> Collection: users
+            |
+            +--> Document 1: { name: "Vikash", email: "vikash@example.com" }
+            +--> Document 2: { name: "Rahul",  email: "rahul@example.com" }
+```
+
+A document is like a record. In MongoDB it is stored in BSON (a binary format similar to JSON). MongoDB usually adds a unique `_id` to each document.
+
+Approximate comparison with SQL:
+
+| PostgreSQL / SQL | MongoDB |
+| --- | --- |
+| Database | Database |
+| Table | Collection |
+| Row | Document |
+| Column | Field |
+
+### 4. Mongoose schema and model — what are they?
+
+Install Mongoose:
+
+```bash
+npm install mongoose
+```
+
+Connect to the `shophub` database (after loading your environment variables):
+
+```js
+import mongoose from "mongoose";
+
+await mongoose.connect(process.env.MONGODB_URI, {
+  dbName: "shophub",
+});
+```
+
+Define a **schema**: it describes the fields and rules for user documents.
+
+```js
+const userSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true },
+});
+```
+
+Create a **model** based on the schema:
+
+```js
+const User = mongoose.model("User", userSchema);
+```
+
+By default, Mongoose maps model `User` to the `users` collection.
+
+Now create a document:
+
+```js
+await User.create({
+  name: "Vikash",
+  email: "vikash@example.com",
+});
+```
+
+**Execution flow:**
+
+```text
+User.create(...)
+    |
+    v
+Mongoose validates the document using the schema
+    |
+    v
+MongoDB driver sends an insert operation
+    |
+    v
+MongoDB database: shophub
+    |
+    v
+Collection: users
+    |
+    v
+A user document is saved
+```
+
+**Important:** `mongoose.model("User", userSchema)` defines a Mongoose model in your Node.js code. It does **not** mean you have created a new database in Atlas.
+
+### 5. Do you have to create collections manually in Atlas?
+
+**No.** You can create a database/collection using the Atlas interface, but MongoDB can also create a missing collection when you first insert data (depending on configuration and permissions).
+
+For example:
+
+```js
+await User.create({ name: "Vikash", email: "vikash@example.com" });
+```
+
+If the database and collection do not exist yet, a successful first write can create them automatically. Mongoose also has collection-creation features controlled by its configuration.
+
+### 6. Quick summary
+
+```text
+MongoDB       = Database system
+Atlas         = Cloud hosting and management for MongoDB
+Mongoose      = Node.js ODM library
+Cluster       = MongoDB deployment / database servers
+Database      = Contains collections
+Collection    = Contains documents
+Document      = One data record
+Schema        = Field structure/rules defined in Mongoose
+Model         = JavaScript interface used to query a collection
+```
+
+**Check your understanding:** Does `mongoose.model("User", userSchema)` create a new database in Atlas? **No** — it defines a model. A database/collection is created in MongoDB when required by a supported database operation.
+
+---
+
+
 ## Why MongoDB integration matters
 
 MongoDB is common in Node.js applications because both work naturally with JSON-like documents.
