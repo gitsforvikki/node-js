@@ -124,3 +124,91 @@ This can help defend against query selector injection by wrapping suspicious nes
 4. Explain why `sanitizeFilter` is extra defense, not a replacement for validation.
 
 **Interview answer:** NoSQL injection happens when user-controlled data alters a database query through unexpected objects or operators. In MongoDB/Mongoose, defend by validating primitive types, constructing allowlisted filters, restricting updates, and applying defense-in-depth options.
+
+---
+
+## 8. Operator injection vs unsafe updates
+
+MongoDB uses special operators: `$ne` (not equal), `$gt` (greater than), `$or` (logical OR), `$set` (set fields). Operators are useful when **your code** chooses them; dangerous when a client chooses arbitrary operators.
+
+A second risk is **mass assignment** in updates:
+
+```js
+// BAD: attacker may submit { role: "admin" }
+await User.findByIdAndUpdate(req.user.id, req.body);
+
+// BETTER: validated, explicit allowed fields
+const parsed = z.strictObject({
+  displayName: z.string().trim().min(1).max(60),
+}).safeParse(req.body);
+if (!parsed.success) return res.sendStatus(400);
+
+await User.updateOne(
+  { _id: req.user.id },
+  { $set: { displayName: parsed.data.displayName } }
+);
+```
+
+NoSQL injection and mass assignment are different problems, but both happen when the API trusts client-controlled object structure.
+
+## 9. Validate ObjectId and avoid client-controlled queries
+
+```js
+import mongoose from "mongoose";
+
+app.get("/users/:id", requireAuth, async (req, res) => {
+  const id = req.params.id;
+  if (!mongoose.isObjectIdOrHexString(id)) {
+    return res.status(400).json({ message: "Invalid ID" });
+  }
+  if (id !== req.user.id) return res.sendStatus(403);
+
+  const user = await User.findById(id).select("name email");
+  if (!user) return res.sendStatus(404);
+  res.json({ user });
+});
+```
+
+This is a self-profile example: a valid ID alone does not grant access. The authenticated identity must come from verified auth middleware.
+
+## 10. Query selector injection and Mongoose behavior
+
+A user might send a JSON value like `{"email":{"$ne":null}}`. Depending on the API, casting, and Mongoose settings, that object may be rejected or interpreted as a selector. **Never rely on a particular casting error to protect you.**
+
+Safer pattern:
+1. Validate `email` as a string.
+2. Build `{ email: validatedEmail }` in server code.
+3. Do not accept arbitrary `filter`, `sort`, `projection`, or `update` objects from the client.
+4. Consider `sanitizeFilter` as extra defense, not a substitute for the above.
+
+## 11. Regex and aggregation pitfalls
+
+- Avoid building arbitrary regular expressions from user input. Regex patterns can be expensive or change matching behavior. For literal text search, escape regex metacharacters and limit length, or use appropriate indexed search features.
+- Never pass user-controlled arrays directly into `Model.aggregate(req.body.pipeline)`; aggregation stages can expose data or cause expensive queries.
+- Do not allow user-selected `$where` or JavaScript execution features.
+
+Example of safe fixed aggregation shape:
+
+```js
+const parsed = z.strictObject({
+  status: z.enum(["paid", "pending"]),
+}).safeParse(req.query);
+if (!parsed.success) return res.sendStatus(400);
+
+const summary = await Order.aggregate([
+  { $match: { status: parsed.data.status, userId: req.user._id } },
+  { $group: { _id: "$status", count: { $sum: 1 } } },
+]);
+```
+
+`req.user._id` must be a trusted, properly typed ID from verified authentication.
+
+## 12. Preventing abuse beyond injection
+
+- Set sensible query limits, timeouts, and indexes.
+- Keep MongoDB credentials least-privileged.
+- Never return raw database errors or private fields.
+- Test unexpected arrays/objects in fields meant to be strings.
+- Ensure authorization applies to every resource and query.
+
+**Interview takeaway:** Mongoose schemas help, but only strict input types, allowlisted query structure, permission checks, and defense in depth make API queries trustworthy.
