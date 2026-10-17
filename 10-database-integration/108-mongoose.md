@@ -440,132 +440,169 @@ Without `isModified`, password could be rehashed on unrelated saves.
 
 ## 18. Instance methods
 
+**What:** A custom function available on **one Mongoose document**. Use it when the behavior belongs to an individual user, such as checking their password.
+
 ```js
-userSchema.methods
-  .comparePassword =
-  function (candidate) {
-    return verify(
-      candidate,
-      this.passwordHash
-    );
-  };
+import bcrypt from "bcryptjs";
+
+userSchema.methods.comparePassword = async function (candidate) {
+  return bcrypt.compare(candidate, this.passwordHash);
+};
+
+const User = mongoose.model("User", userSchema);
+
+// passwordHash is excluded by select: false in the schema.
+const user = await User.findOne({ email }).select("+passwordHash");
+if (!user || !(await user.comparePassword(inputPassword))) {
+  throw new Error("Invalid credentials");
+}
 ```
 
-Use carefully to avoid bloated model classes.
+**How it works:** `user.comparePassword(...)` uses `this.passwordHash` from **that user document**. `bcrypt.compare()` checks the plaintext candidate against the stored hash; never compare plaintext passwords directly.
+
+**Remember:** Instance methods are available on Mongoose documents, not on plain objects returned by `lean()`. Keep complex business workflows in services rather than adding everything to the model.
 
 ---
 
 ## 19. Static methods
 
+**What:** A custom function available on the **Model itself**. Use it to reuse common collection queries.
+
 ```js
-userSchema.statics
-  .findByEmail =
-  function (email) {
-    return this.findOne({
-      email,
-    });
-  };
+userSchema.statics.findByEmail = function (email) {
+  return this.findOne({ email });
+};
+
+const User = mongoose.model("User", userSchema);
+
+const user = await User.findByEmail("vikash@example.com");
 ```
 
-Repositories may be cleaner for larger systems.
+**Difference:** `User.findByEmail()` is a **static method** on the model; `user.comparePassword()` is an **instance method** on one document. In a larger app, repositories/services can be a clearer home for complex queries and business rules.
 
 ---
 
 ## 20. Virtuals
 
-Virtual field:
+**What:** A property calculated from other fields, **not stored in MongoDB**. Useful for display-only values such as a full name.
 
 ```js
-userSchema.virtual(
-  "fullName"
-).get(function () {
+const userSchema = new mongoose.Schema(
+  { firstName: String, lastName: String },
+  { toJSON: { virtuals: true } }
+);
+
+userSchema.virtual("fullName").get(function () {
   return `${this.firstName} ${this.lastName}`;
 });
+
+const User = mongoose.model("User", userSchema);
+const user = new User({ firstName: "Vikash", lastName: "Kumar" });
+
+console.log(user.fullName); // "Vikash Kumar"
+console.log(user.toJSON().fullName); // "Vikash Kumar"
 ```
 
-Not stored in DB.
+**Why useful:** You avoid storing duplicate data (`fullName`) that might become outdated when `firstName` changes. Virtuals do not appear in normal `lean()` results without extra configuration/plugins.
 
 ---
 
 ## 21. lean()
 
+**What:** By default, Mongoose converts query results into full **Mongoose documents** with methods, change tracking, and other features. `lean()` skips that conversion and returns **plain JavaScript objects**.
+
 ```js
-const users =
-  await User
-    .find({})
-    .lean();
+const users = await User.find({ active: true })
+  .select("name email")
+  .lean();
+
+console.log(users[0].name); // Works: normal object property
+// users[0].save();         // Does NOT work: no document method
 ```
 
-Returns plain JavaScript objects instead of full Mongoose documents.
+**When useful:** Read-only API endpoints, lists, and dashboards where you only need to send data. It generally uses less memory and reduces Mongoose processing.
 
-Benefits:
-- less memory
-- faster reads
-
-Trade-off:
-- no document methods
-- no document change tracking
-- virtuals/getters behavior depends on configuration/plugins
-
-Excellent interview topic.
+**When not to use:** If you need `document.save()`, instance methods, or ordinary document virtuals/getters. `lean()` does not automatically add those features. It does **not** make MongoDB itself execute a query faster; it mainly reduces work in Node.js.
 
 ---
 
 ## 22. Projection
 
+**What:** Projection means **selecting only the fields you need** from a MongoDB document.
+
 ```js
-User
-  .find({})
-  .select(
-    "name email"
-  );
+const users = await User.find({})
+  .select("name email")
+  .lean();
+
+// Each result contains name, email, and usually _id.
 ```
 
-Avoid fetching fields you do not need.
+**Why useful:** Less data travels from MongoDB to Node.js, and you avoid accidentally returning unnecessary fields (especially sensitive ones).
+
+```js
+const user = await User.findById(id).select("-email -phone");
+// Excludes email and phone.
+```
+
+**Important:** `_id` is included by default; use `.select("name email -_id")` if you want to exclude it. Projection is not a replacement for proper authorization or response sanitization.
 
 ---
 
 ## 23. Query chaining
 
+**What:** Build a query step by step using readable methods for **filtering, sorting, and limiting** results.
+
+Example: show the 10 newest active users.
+
 ```js
-User
-  .find({
-    active: true,
-  })
-  .sort({
-    createdAt: -1,
-  })
-  .limit(20);
+const users = await User.find({ active: true })
+  .sort({ createdAt: -1 })
+  .limit(10)
+  .select("name email createdAt")
+  .lean();
 ```
 
-Readable, but always understand generated query behavior.
+**Execution meaning:**
+1. `find({ active: true })`: only active users.
+2. `sort({ createdAt: -1 })`: newest first (`1` means ascending).
+3. `limit(10)`: at most 10 results.
+4. `select(...)`: return only required fields.
+5. `lean()`: plain objects for a read-only response.
+
+**Why useful:** Cleaner API queries and controlled response sizes. For consistent ordering when timestamps tie, add `_id` as a second sort field. Index frequently used filter/sort fields for large collections.
 
 ---
 
 ## 24. findOneAndUpdate
 
+**What:** Find one matching document and update it **in one MongoDB operation**, without fetching it first and then calling `save()`.
+
 ```js
-const user =
-  await User.findOneAndUpdate(
-    {
-      _id: id,
-    },
-    {
-      $set: {
-        name,
-      },
-    },
-    {
-      new: true,
-      runValidators: true,
-    }
-  );
+const updatedUser = await User.findOneAndUpdate(
+  { _id: id },                     // Which user?
+  { $set: { name: "Vikash Kumar" } }, // What to change?
+  {
+    new: true,          // Return updated document
+    runValidators: true // Run supported update validators
+  }
+);
+
+if (!updatedUser) {
+  throw new Error("User not found");
+}
+console.log(updatedUser.name); // "Vikash Kumar"
 ```
 
-Important:
-- validation behavior may differ from save
-- hooks differ
-- use options intentionally
+**Why useful:** Convenient for a single update, avoids a separate read-then-save flow, and MongoDB performs the single-document update atomically.
+
+**Important differences from `save()`:**
+- `pre("save")` / `post("save")` **do not run**; use `findOneAndUpdate` query middleware if needed.
+- Update validation is **off by default**; `runValidators: true` enables supported validators, but update validation differs from full document validation.
+- `new: true` returns the updated document; without it, the default is the pre-update document.
+- A nonmatching filter returns `null`.
+
+For password changes, do not assume a password-hashing `save` hook runs on this method.
 
 ---
 
