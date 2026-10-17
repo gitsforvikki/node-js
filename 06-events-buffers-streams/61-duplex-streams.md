@@ -201,6 +201,129 @@ const server =
 
 ---
 
+## 7A. Hands-on: Server and client in two terminals
+
+A TCP socket is a **Duplex stream**: each connected socket can both receive data (`data` event) and send data (`write()`).
+
+**Real-life analogy:** A phone call lets you listen and speak over the same connection.
+
+Create **two separate files**.
+
+### server.js
+
+```js
+import net from "node:net";
+
+const streamServer = net.createServer((socket) => {
+  console.log("Client connected");
+
+  // READ: receive data from client
+  socket.on("data", (data) => {
+    console.log("Client:", data.toString());
+
+    // WRITE: send data back to client
+    socket.write("Hello from server...");
+  });
+
+  socket.on("end", () => {
+    console.log("Client finished sending data");
+  });
+
+  socket.on("error", (error) => {
+    console.error("Socket error:", error.message);
+  });
+});
+
+streamServer.listen(3000, () => {
+  console.log("Server is running at 3000");
+});
+```
+
+### client.js
+
+```js
+import net from "node:net";
+
+const client = net.createConnection({ port: 3000 }, () => {
+  // WRITE: send data to the server
+  client.write("Hello server,what are you doing...");
+});
+
+// READ: receive server response
+client.on("data", (data) => {
+  console.log("From Server:", data.toString());
+  client.end(); // no more data to send
+});
+
+client.on("error", (error) => {
+  console.error("Connection error:", error.message);
+});
+```
+
+> These examples use ES modules: use `"type": "module"` in `package.json`, or name the files `.mjs`.
+
+### How to run: open **two terminals**
+
+**Terminal 1 — server** (keep this running):
+
+```bash
+node server.js
+```
+
+Initially you only see:
+
+```text
+Server is running at 3000
+```
+
+This is normal: the server is listening but no client has connected yet.
+
+**Terminal 2 — client** (run separately):
+
+```bash
+node client.js
+```
+
+**Server terminal after the client runs:**
+
+```text
+Server is running at 3000
+Client connected
+Client: Hello server,what are you doing...
+Client finished sending data
+```
+
+**Client terminal:**
+
+```text
+From Server: Hello from server...
+```
+
+The client exits after calling `end()` and completing the connection shutdown. The server keeps listening for new clients.
+
+### Step-by-step execution
+
+1. `server.listen(3000)` starts waiting for connections.
+2. `net.createConnection({ port: 3000 })` connects the client.
+3. The client's `write()` sends bytes **to** the server.
+4. The server's `socket.on("data")` receives and logs those bytes.
+5. The server's `socket.write()` sends a reply **to** the client.
+6. The client's `on("data")` receives the reply and calls `end()`.
+7. The server's `end` event means the client finished its writable side; it does not mean the server stopped listening.
+
+```text
+CLIENT SOCKET                       SERVER SOCKET
+  write("Hello server") ----------> on("data") [READ]
+  on("data") [READ] <------------- write("Hello from server")
+  end() --------------------------> on("end")
+```
+
+**Key distinction:** `net.createServer()` creates the listening server, while `net.createConnection()` creates a separate client connection. Running only `server.js` does not send a client message. Both ends expose Duplex sockets.
+
+**Also remember:** TCP transfers a stream of bytes, not guaranteed one-message-per-`data`-event packets. For real applications, define message boundaries (for example, newline-delimited messages).
+
+---
+
 ## 8. Backpressure on Duplex streams
 
 Because Duplex streams have both sides, backpressure considerations can apply independently.
