@@ -275,44 +275,138 @@ User
 
 ## 15. Middleware hooks
 
-Example:
+**Mongoose middleware (hooks)** are functions that run **before or after a Mongoose operation**, such as saving or querying data.
+
+- `schema.pre("save", fn)`: runs **before** a save.
+- `schema.post("save", fn)`: runs **after** a successful save.
+
+**Simple example — see the execution order:**
 
 ```js
-userSchema.pre(
-  "save",
-  async function () {
-    // hash password
-  }
-);
+import mongoose from "mongoose";
+
+const userSchema = new mongoose.Schema({
+  name: String,
+});
+
+userSchema.pre("save", function () {
+  console.log("1. Before saving:", this.name);
+});
+
+userSchema.post("save", function (doc) {
+  console.log("3. Saved:", doc.name);
+});
+
+// Define hooks BEFORE compiling the model.
+const User = mongoose.model("User", userSchema);
+
+console.log("0. Creating user");
+await User.create({ name: "Vikash" });
+console.log("4. Create finished");
 ```
 
-Useful but can hide important logic.
+Expected output after a successful database connection:
 
-Use hooks for model lifecycle concerns, not giant business workflows.
+```text
+0. Creating user
+1. Before saving: Vikash
+3. Saved: Vikash
+4. Create finished
+```
+
+**Flow:** `User.create()` → `pre("save")` → MongoDB insert → `post("save")` → `create()` completes.
+
+This is useful for small model-related tasks such as normalizing data, password hashing, and logging. Do **not** put complex payment or business workflows inside hooks.
+
+Mongoose has **document, query, model, and aggregate** middleware. The next section explains document and query middleware separately.
 
 ---
 
 ## 16. Document middleware vs query middleware
 
-These are different.
+Both use `pre()` or `post()`, but **what `this` refers to is different**.
 
-Example:
+### A. Document middleware
 
-```text
-document.save()
+Runs for a document operation such as `user.save()` or `User.create()`. Here, `this` is the **document**, so you can access fields directly.
+
+```js
+const userSchema = new mongoose.Schema({
+  name: String,
+  email: String,
+});
+
+userSchema.pre("save", function () {
+  console.log("Saving user:", this.name);
+  this.email = this.email.toLowerCase();
+});
+
+const User = mongoose.model("User", userSchema);
+
+await User.create({
+  name: "Vikash",
+  email: "VIKASH@EXAMPLE.COM",
+});
 ```
 
-may trigger document middleware.
+The hook runs before the document is saved, and the stored email is lowercase. `save` middleware also runs when `User.create()` saves a document.
 
-But:
+### B. Query middleware
 
-```text
-findOneAndUpdate()
+Runs for queries such as `User.find()` or `User.findOneAndUpdate()`. Here, `this` is a **Mongoose query**, **not** an individual user document.
+
+Example — exclude soft-deleted users from `find()` queries:
+
+```js
+const userSchema = new mongoose.Schema({
+  name: String,
+  isDeleted: { type: Boolean, default: false },
+});
+
+userSchema.pre("find", function () {
+  this.where({ isDeleted: false });
+});
+
+const User = mongoose.model("User", userSchema);
+
+const users = await User.find(); // excludes isDeleted: true
 ```
 
-uses query middleware behavior.
+This hook changes only `find()` queries; it does not automatically apply to `findOne()` or every other read method. Add the relevant hooks if you want that behavior across other query methods.
 
-Do not assume all hooks run for all update methods.
+### C. Important: save hooks do not run on query updates
+
+```js
+await user.save();                 // pre("save") runs
+await User.create({ name: "A" }); // pre("save") runs
+
+await User.findOneAndUpdate(
+  { name: "A" },
+  { $set: { name: "B" } }
+); // pre("save") does NOT run
+```
+
+To react to that update, define a separate **query middleware** hook:
+
+```js
+userSchema.pre("findOneAndUpdate", function () {
+  console.log("Updating with filter:", this.getQuery());
+  console.log("Update data:", this.getUpdate());
+});
+```
+
+Define hooks **before** `mongoose.model("User", userSchema)`. This query hook does not directly give you the document being updated.
+
+**Password safety:** A password hash implemented only in `pre("save")` will **not** run when a password changes using `findOneAndUpdate()` or `findByIdAndUpdate()`. Handle password updates explicitly and safely.
+
+| Document middleware | Query middleware |
+| --- | --- |
+| Runs on document operations | Runs on query operations |
+| `this` is the document | `this` is the query |
+| Example: `pre("save")` | Example: `pre("findOneAndUpdate")` |
+| Access `this.name` | Access `this.getQuery()` / `this.getUpdate()` |
+
+**Remember:** A hook only runs for the matching operation. Don't assume all update methods trigger `save` middleware.
 
 ---
 
