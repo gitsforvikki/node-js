@@ -10,6 +10,155 @@ It solves one of the biggest problems with plain `pipe()` chains:
 
 ---
 
+## 0. First understand the problem: why do we need pipe or pipeline?
+
+Imagine copying a 1 GB file. With `readFile()`, Node.js attempts to load the entire file into memory:
+
+```js
+import fs from "node:fs/promises";
+
+const data = await fs.readFile("large-file.txt");
+await fs.writeFile("output.txt", data);
+```
+
+For large files, holding the full content in memory can be expensive. **Streams** read and write in chunks instead.
+
+### Option A — `pipe()`
+
+```js
+import fs from "node:fs";
+
+const readable = fs.createReadStream("large-file.txt");
+const writable = fs.createWriteStream("output.txt");
+
+readable.pipe(writable);
+```
+
+Flow:
+
+```text
+large-file.txt  ->  Readable Stream  --pipe()-->  Writable Stream  ->  output.txt
+                      (chunks)                       (chunks)
+```
+
+How it works:
+
+1. `createReadStream()` reads chunks from the source file.
+2. `pipe()` sends those chunks to the writable stream.
+3. `createWriteStream()` writes them to the destination file.
+4. The destination normally finishes when the source ends.
+
+`pipe()` also handles **backpressure**: if writing is slower than reading, it pauses/resumes the readable stream as needed.
+
+**Limitation:** `pipe()` does not coordinate all errors and destruction across the chain. For example, if `large-file.txt` does not exist, the read stream emits an `error` event; `pipe()` alone does not provide a complete error boundary.
+
+### Option B — `pipeline()` (recommended for complete jobs)
+
+```js
+import fs from "node:fs";
+import { pipeline } from "node:stream/promises";
+
+async function copyFile() {
+  try {
+    await pipeline(
+      fs.createReadStream("large-file.txt"),
+      fs.createWriteStream("output.txt")
+    );
+    console.log("File copied successfully");
+  } catch (error) {
+    console.error("File copy failed:", error.message);
+  }
+}
+
+copyFile();
+```
+
+`pipeline()` also transfers chunks and handles backpressure, but additionally:
+
+1. Connects the stream chain.
+2. Propagates errors to one callback or Promise rejection.
+3. Destroys relevant streams on failure (with some documented exceptions).
+4. Waits until the pipeline completes; the Promise version can be `await`ed.
+
+If `large-file.txt` is missing, the `catch` block runs instead of leaving you to wire every stream's error handling separately. A failed copy may leave a partial `output.txt`; remove it if your application requires all-or-nothing output.
+
+---
+
+## Comparison — pipe() vs pipeline()
+
+| Feature | `pipe()` | `pipeline()` |
+| --- | --- | --- |
+| Purpose | Connect readable to writable | Manage a complete stream chain |
+| Backpressure | Yes | Yes |
+| Multiple steps | Chain `.pipe()` calls | Pass multiple streams as arguments |
+| Error coordination | Manual | Built in |
+| Cleanup after error | Largely manual | Coordinated stream destruction |
+| Completion with async/await | Not directly | Yes, `node:stream/promises` |
+| Best fit | Manually controlled/simple connections | File processing, compression, production workflows |
+
+**Important:** `pipe()` is a method on a readable stream (`readable.pipe(writable)`). `pipeline()` is a utility imported from `node:stream` (callback) or `node:stream/promises` (Promise).
+
+---
+
+## Practical example — compress a log file
+
+This example uses three types of streams:
+
+```text
+app.log -> Readable -> Transform (gzip) -> Writable -> app.log.gz
+```
+
+### With pipe()
+
+```js
+import fs from "node:fs";
+import zlib from "node:zlib";
+
+fs.createReadStream("app.log")
+  .pipe(zlib.createGzip())
+  .pipe(fs.createWriteStream("app.log.gz"));
+```
+
+It works on success, but a production version needs proper error handling and cleanup.
+
+### With pipeline()
+
+```js
+import fs from "node:fs";
+import zlib from "node:zlib";
+import { pipeline } from "node:stream/promises";
+
+async function compressLog() {
+  try {
+    await pipeline(
+      fs.createReadStream("app.log"),
+      zlib.createGzip(),
+      fs.createWriteStream("app.log.gz")
+    );
+
+    console.log("Compression completed");
+  } catch (error) {
+    console.error("Compression failed:", error.message);
+  }
+}
+
+compressLog();
+```
+
+The file is processed in chunks; `pipeline()` **does not load the entire file into memory**.
+
+### When should I use each?
+
+**Use `pipe()`** when you want a simple connection and plan to manage errors/lifecycle yourself, or need direct control such as `unpipe()`.
+
+**Use `pipeline()`** for tasks such as copying large files, compressing uploads/logs, processing CSV files, or connecting multiple transforms where errors and cleanup matter.
+
+**Interview answer:** `pipe()` connects streams and handles data flow/backpressure. `pipeline()` connects streams **and** coordinates completion, errors, and cleanup. Its Promise API supports `async/await`, so it's generally the safer choice for a complete production stream job.
+
+**Quick test:** What happens if `input.txt` doesn't exist while you run `fs.createReadStream("input.txt").pipe(fs.createWriteStream("output.txt"))`? You need an error listener or coordinated handling; plain `pipe()` does not automatically handle that error for you.
+
+---
+
 ## 1. Basic pipeline
 
 Callback style:
