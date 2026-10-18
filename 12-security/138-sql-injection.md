@@ -10,15 +10,132 @@ Imagine a login search that builds SQL by joining strings. Someone enters SQL-li
 
 ## 2. Unsafe example — do NOT use in an app
 
-```js
-// BAD: untrusted input is placed directly into SQL text.
-const sql = "SELECT id, email FROM users WHERE email = '" +
-  req.body.email + "'";
+SQL injection becomes easy to understand when we see **what SQL the database actually receives**.
 
-const result = await pool.query(sql);
+### 2.1 Sample users table
+
+Imagine the PostgreSQL database has these records:
+
+| id | email |
+| --- | --- |
+| 1 | rahul@gmail.com |
+| 2 | vikash@gmail.com |
+| 3 | amit@gmail.com |
+
+### 2.2 Unsafe Express route
+
+```js
+// ❌ Educational example only — never use in a real application.
+app.get("/users", async (req, res) => {
+  const email = req.query.email;
+
+  // BAD: user input is inserted directly into SQL instructions.
+  const sql =
+    "SELECT id, email FROM users WHERE email = '" +
+    email +
+    "'";
+
+  const result = await pool.query(sql);
+  res.json(result.rows);
+});
 ```
 
-**Why dangerous?** The email value can contain characters interpreted as SQL syntax. The database cannot reliably separate the developer's SQL from user-provided text.
+The developer expects an email address, but there is **no separation between the SQL instructions and the supplied input**.
+
+### 2.3 Case 1 — Normal input
+
+Request:
+
+```http
+GET /users?email=rahul@gmail.com
+```
+
+After string concatenation, the generated SQL is:
+
+```sql
+SELECT id, email
+FROM users
+WHERE email = 'rahul@gmail.com';
+```
+
+**Result:** Only Rahul's record is returned, as intended.
+
+### 2.4 Case 2 — SQL injection input
+
+Now imagine someone supplies this **instead of an email**:
+
+```text
+' OR '1'='1
+```
+
+Because the input is directly concatenated, the SQL becomes:
+
+```sql
+SELECT id, email
+FROM users
+WHERE email = '' OR '1'='1';
+```
+
+Let's evaluate the `WHERE` condition:
+
+- `email = ''` — normally false for these users.
+- `'1'='1'` — always true.
+- `false OR true` — true.
+
+**Result:** The condition is true for every record, so the query can return **all three users** instead of one.
+
+Notice how the input's quotes and `OR` changed the **meaning of the SQL query**. The attacker-provided string was interpreted as SQL syntax rather than a single email value.
+
+### 2.5 Execution flow
+
+```text
+Attacker input: ' OR '1'='1
+           |
+           v
+Unsafe JS string concatenation
+           |
+           v
+WHERE email = '' OR '1'='1'
+           |
+           v
+Condition matches every row
+           |
+           v
+All users are returned
+```
+
+### 2.6 Fix — parameterized query
+
+With PostgreSQL and the Node.js `pg` driver:
+
+```js
+app.get("/users", async (req, res) => {
+  const email = req.query.email;
+
+  // ✅ SQL instructions and email value are kept separate.
+  const sql = "SELECT id, email FROM users WHERE email = $1";
+  const result = await pool.query(sql, [email]);
+
+  res.json(result.rows);
+});
+```
+
+Here:
+
+1. `$1` is a placeholder for the **first parameter value**.
+2. `[email]` passes the user input separately.
+3. Even if the email contains `' OR '1'='1`, PostgreSQL treats that entire text as **one value**, not a new SQL condition.
+4. Unless an email literally matches that string, the query returns **no rows**.
+
+| Unsafe query | Parameterized query |
+| --- | --- |
+| Concatenates user input into SQL text | Sends SQL structure and values separately |
+| Input can change query logic | Input stays data, not SQL instructions |
+| Vulnerable to SQL injection | Protects parameter values from SQL injection |
+
+> **Important:** This simple route demonstrates injection prevention, not a complete production API. Validate `email`, handle errors, and enforce authorization. Parameterization prevents injection but does not automatically decide who is allowed to view user records.
+
+**Interview takeaway:** SQL injection occurs when untrusted data becomes executable SQL syntax. Parameterized queries prevent this by separating query instructions from the values supplied by users.
 
 ## 3. Correct approach — parameterized query
 
