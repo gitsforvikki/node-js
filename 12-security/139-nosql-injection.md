@@ -10,22 +10,154 @@ MongoDB queries are JavaScript-like objects. Some keys, such as `$ne`, `$gt`, an
 
 ## 2. Unsafe login lookup example
 
+Let's understand **NoSQL operator injection** using an Express + Mongoose example. The following code is intentionally unsafe and is **not a complete login implementation**.
+
+### 2.1 Sample users collection
+
+| _id | email | password |
+| --- | --- | --- |
+| 1 | rahul@gmail.com | hashed123 |
+| 2 | vikash@gmail.com | hashed456 |
+| 3 | amit@gmail.com | hashed789 |
+
+The passwords above are illustrative placeholders, not real password hashes.
+
+### 2.2 Unsafe Express route
+
 ```js
-// BAD: req.body.email could be an object instead of a string.
-const user = await User.findOne({ email: req.body.email });
+// ❌ BAD: Do not use this as authentication code.
+app.post("/login", async (req, res) => {
+  const user = await User.findOne({
+    email: req.body.email
+  });
+
+  if (!user) {
+    return res.status(404).json({ message: "User not found" });
+  }
+
+  // BAD: Exposes the user document; no password verification.
+  res.json({ user });
+});
 ```
 
-A malicious client could send a JSON object instead of an email string:
+**Problem:** The code never checks whether `req.body.email` is actually a string. It could be an object containing MongoDB query operators.
+
+### 2.3 Case 1 — Normal email input
+
+```json
+{ "email": "rahul@gmail.com" }
+```
+
+The lookup is equivalent to:
+
+```js
+User.findOne({ email: "rahul@gmail.com" });
+```
+
+**Result:** Rahul's matching document is returned, as expected.
+
+### 2.4 Case 2 — Malicious object instead of an email
+
+An attacker sends:
 
 ```json
 {
-  "email": { "$ne": null }
+  "email": {
+    "$ne": null
+  }
 }
 ```
 
-`$ne` means "not equal". If an untrusted object reaches a MongoDB query as an operator, it can change the search from "match this email" to something else.
+**What is `$ne`?** It means **not equal** in MongoDB. For example:
 
-**Important:** Actual behavior depends on Mongoose version, schema casting, and sanitization options. Never depend on accidental rejection as your primary defense.
+```js
+User.find({ email: { $ne: null } });
+```
+
+This matches documents whose email is not null (and whose email field exists).
+
+If the untrusted object reaches MongoDB as a query selector, the unsafe lookup effectively becomes:
+
+```js
+User.findOne({
+  email: { $ne: null }
+});
+```
+
+This no longer means **find Rahul's exact email**. It means **find a user with a non-null email**.
+
+With the sample data, all three users match the condition, but `findOne()` returns **only one matching document**. Without an explicit sort, do not assume which matching user will be returned.
+
+### 2.5 Step-by-step execution flow
+
+```text
+Attacker sends { "email": { "$ne": null } }
+                   |
+                   v
+Express parses JSON into req.body.email (an object)
+                   |
+                   v
+Unsafe Mongoose query receives the object
+                   |
+                   v
+email: { $ne: null }  (if interpreted as an operator)
+                   |
+                   v
+Any user with a non-null email can match
+                   |
+                   v
+findOne() returns one matching user, not necessarily the intended one
+```
+
+**Why dangerous?** The client changed the **query condition**, not just its value. However, finding a user document **does not automatically bypass authentication**: a correctly implemented login must still verify the password and enforce proper authorization. The demo route is insecure because it does neither and exposes the returned document.
+
+**Mongoose caveat:** Actual behavior depends on the Mongoose version, schema casting, and `sanitizeFilter` settings. The payload may be interpreted as a selector, rejected, or sanitized. Never rely on a particular casting error as your security control.
+
+### 2.6 Fix 1 — Validate the input type
+
+```js
+app.post("/users/lookup", async (req, res) => {
+  const { email } = req.body ?? {};
+
+  if (typeof email !== "string") {
+    return res.status(400).json({ message: "Email must be a string" });
+  }
+
+  const user = await User.findOne({ email }).select("name email");
+  res.json({ user });
+});
+```
+
+For the malicious payload, `typeof req.body.email` is `"object"`, so the request gets a **400** response instead of reaching the query. In a real application, also validate email format, length, and authorization.
+
+### 2.7 Fix 2 — Explicit equality and defense in depth
+
+```js
+// Use only after validating email as a string.
+const user = await User.findOne({
+  email: { $eq: email }
+});
+```
+
+Here the developer chooses the `$eq` (equals) operator rather than allowing the client to choose the query structure. **Type validation is still required.**
+
+Mongoose also provides:
+
+```js
+mongoose.set("sanitizeFilter", true);
+```
+
+This can help prevent certain nested operator objects from being treated as query selectors, but **does not replace validation or authorization**.
+
+### 2.8 SQL vs NoSQL injection
+
+| SQL injection | MongoDB NoSQL injection |
+| --- | --- |
+| User input alters SQL instructions | User-controlled objects alter query operators |
+| Example: `' OR '1'='1` | Example: `{ "$ne": null }` |
+| Defense: parameterized queries | Defense: validated types, controlled filters, sanitization |
+
+**Interview takeaway:** In MongoDB, `{ email: "rahul@gmail.com" }` is an exact-match filter, while `{ email: { $ne: null } }` is an operator-based filter. Never let untrusted client objects choose your database query logic.
 
 ## 3. Safe approach: validate and construct the filter
 
