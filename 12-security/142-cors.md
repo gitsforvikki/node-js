@@ -49,25 +49,178 @@ If the server doesn't allow that origin, the browser does not expose the respons
 
 ## 4. Simple vs preflighted requests
 
-Some cross-origin requests are **simple** and do not need preflight, for example certain GET requests with only safelisted headers.
+A **CORS preflight** is a permission check the browser performs **before** sending certain cross-origin requests. The browser automatically sends an `OPTIONS` request to ask whether the intended method and headers are allowed. You do **not** write this OPTIONS call in React.
 
-Other requests require a **preflight**: the browser sends an `OPTIONS` request first to ask permission.
+### 4.1 Our setup: two different origins
 
-A JSON POST with `Content-Type: application/json` usually triggers preflight.
+| Application | URL |
+| --- | --- |
+| React frontend | `http://localhost:3000` |
+| Express API | `http://localhost:5000` |
 
-```text
-Browser -> OPTIONS /api/users
-  Origin: http://localhost:3000
-  Access-Control-Request-Method: POST
-  Access-Control-Request-Headers: content-type
+The ports differ, so the origins differ.
 
-Server -> 204 + CORS permission headers
+### 4.2 Simple GET request — no preflight
 
-Browser -> POST /api/users
-Server -> JSON response + CORS headers
+```js
+// Runs in React at localhost:3000
+const response = await fetch("http://localhost:5000/api/users");
+const users = await response.json();
 ```
 
-The browser may cache a successful preflight. The real request is sent only if preflight checks succeed.
+For this ordinary GET request with no custom non-safelisted headers, the browser can send the **actual GET directly**:
+
+```text
+React browser (3000)                 Express API (5000)
+       |                                     |
+       |-------- GET /api/users ----------->|
+       |  Origin: http://localhost:3000      |
+       |                                     |
+       |<--- 200 + JSON + CORS headers ------|
+       |                                     |
+       v
+React can read the response if CORS permits it.
+```
+
+Example route:
+
+```js
+app.get("/api/users", (req, res) => {
+  res.json([{ id: 1, name: "Rahul" }, { id: 2, name: "Vikash" }]);
+});
+```
+
+**Important:** No preflight does **not** mean no CORS check. The browser still checks the response's CORS headers. Without permission, the GET may have already reached the server, but JavaScript cannot read the response.
+
+### 4.3 JSON POST — preflight required
+
+```js
+fetch("http://localhost:5000/api/users", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ name: "Vikash" }),
+});
+```
+
+Why preflight? `application/json` is **not** a CORS-safelisted Content-Type. The browser asks permission before sending the actual POST.
+
+**Step 1 — Browser automatically sends OPTIONS:**
+
+```http
+OPTIONS /api/users HTTP/1.1
+Origin: http://localhost:3000
+Access-Control-Request-Method: POST
+Access-Control-Request-Headers: content-type
+```
+
+- `Origin`: Which website initiated the request?
+- `Access-Control-Request-Method`: Which HTTP method will the actual request use?
+- `Access-Control-Request-Headers`: Which non-safelisted headers will it include?
+
+**Step 2 — Express replies with permission headers:**
+
+```http
+HTTP/1.1 204 No Content
+Access-Control-Allow-Origin: http://localhost:3000
+Access-Control-Allow-Methods: GET,POST
+Access-Control-Allow-Headers: Content-Type
+```
+
+`204` means successful response with no body. The exact successful status can vary; the important part is the correct CORS headers.
+
+**Step 3 — Browser sends actual POST only if preflight succeeds:**
+
+```http
+POST /api/users HTTP/1.1
+Origin: http://localhost:3000
+Content-Type: application/json
+
+{"name":"Vikash"}
+```
+
+**Step 4 — Server returns JSON and CORS headers:**
+
+```http
+HTTP/1.1 201 Created
+Access-Control-Allow-Origin: http://localhost:3000
+Content-Type: application/json
+
+{"message":"User created","user":{"name":"Vikash"}}
+```
+
+The browser also checks CORS on this **actual response**.
+
+### 4.4 Complete Express 5 example
+
+```js
+import express from "express";
+import cors from "cors";
+
+const app = express();
+
+app.use(cors({
+  origin: "http://localhost:3000",
+  methods: ["GET", "POST"],
+  allowedHeaders: ["Content-Type"],
+}));
+
+app.use(express.json());
+
+app.get("/api/users", (req, res) => {
+  res.json([{ id: 1, name: "Rahul" }]);
+});
+
+app.post("/api/users", (req, res) => {
+  res.status(201).json({
+    message: "User created",
+    user: req.body,
+  });
+});
+
+app.listen(5000);
+```
+
+With app-wide `cors()`, the middleware normally handles the preflight OPTIONS request automatically. Place it before routes. This example focuses on CORS; a production API still needs input validation and appropriate authentication/authorization.
+
+### 4.5 Which requests typically need preflight?
+
+| Cross-origin request | Preflight? |
+| --- | --- |
+| GET without custom headers | Usually no |
+| POST with `application/x-www-form-urlencoded` | Usually no |
+| POST with `text/plain` | Usually no |
+| POST with `application/json` | Yes |
+| PUT / PATCH / DELETE | Yes |
+| GET with `Authorization` header | Yes |
+
+These are common examples, assuming no other request features or headers change the classification. Simple requests use safelisted methods (GET, HEAD, POST) and meet additional header/content-type restrictions.
+
+### 4.6 What if preflight is rejected?
+
+Suppose the backend only allows GET:
+
+```js
+app.use(cors({
+  origin: "http://localhost:3000",
+  methods: ["GET"],
+}));
+```
+
+A preflight asking to send POST will **not** receive POST permission. The browser blocks the **actual POST**. This is browser behavior: Postman, curl and backend-to-backend clients are not required to enforce browser CORS rules.
+
+### 4.7 Preflight is not CSRF protection
+
+A simple cross-site form POST using `application/x-www-form-urlencoded` can reach the server **without preflight**. If eligible authentication cookies accompany it and the backend has no CSRF defense, an unwanted state-changing action may happen. **CORS is not authorization or a replacement for CSRF tokens / server-side Origin checks.**
+
+### 4.8 Why don't I see OPTIONS before every POST?
+
+A successful preflight may be cached according to `Access-Control-Max-Age` and browser-specific limits. Therefore, the browser need not repeat OPTIONS for every matching request.
+
+**Mental model:**
+
+- **Simple request:** send actual request directly → check CORS on response.
+- **Preflighted request:** send OPTIONS → check permissions → send actual request → check CORS on response.
+- **Interview answer:** A CORS preflight is a browser-generated OPTIONS request that checks whether a server allows the intended cross-origin method and headers before the actual request is sent.
 
 ## 5. Express 5 setup with cors package
 
