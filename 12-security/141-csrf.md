@@ -163,3 +163,100 @@ A secure CORS configuration is useful, but **does not replace CSRF tokens and co
 ## Interview-ready answer
 
 CSRF tricks an authenticated browser into performing an unintended action. It is most relevant when browsers automatically send credentials such as cookies. Prevent it using CSRF tokens or a sound equivalent design, strict Origin checks, appropriate SameSite cookies, and safe HTTP method semantics.
+
+## 12. Cross-origin frontend and backend: does CORS restrict where cookies are sent?
+
+**Short answer: No.** An allowlist in Express CORS controls which origins may read credentialed responses (and which preflighted requests proceed). It is **not** a cookie-sending allowlist.
+
+### Example deployment
+
+| App | URL |
+| --- | --- |
+| React frontend | `https://frontend.com` |
+| Express API | `https://api.backend.com` |
+| Attacker page | `https://attacker.com` |
+
+Backend:
+
+```js
+import cors from "cors";
+
+app.use(cors({
+  origin: ["https://frontend.com"],
+  credentials: true,
+}));
+
+res.cookie("accessToken", token, {
+  httpOnly: true,
+  secure: true,
+  sameSite: "none",
+});
+```
+
+Frontend:
+
+```js
+fetch("https://api.backend.com/profile", {
+  credentials: "include",
+});
+```
+
+Because these domains are **cross-site**, `SameSite=None; Secure` allows the cookie to be eligible for cross-site requests. The browser may still block third-party cookies under its privacy settings or policies. The cookie also must match the **destination host/domain and path**; it is not sent to every website on the internet.
+
+### What if attacker.com calls the API?
+
+```js
+fetch("https://api.backend.com/profile", {
+  credentials: "include",
+});
+```
+
+Even though `attacker.com` is **not** on the CORS allowlist, an eligible cookie **may be sent to api.backend.com**. CORS prevents the attacker's JavaScript from reading the response. For a request that requires a CORS preflight, the browser may block the actual request before it is sent; but simple requests can reach the server without preflight.
+
+### HTML form example: CORS does not stop submission
+
+```html
+<form action="https://api.backend.com/change-email" method="POST">
+  <input name="email" value="attacker@example.com" />
+  <button type="submit">Submit</button>
+</form>
+```
+
+If the server accepts form-encoded input, the browser sends an eligible authentication cookie, and the endpoint has no CSRF defense, the action may happen even though the attacker cannot read the response. **CORS is not an authorization or CSRF check.**
+
+### Protect the backend: verify the request origin
+
+```js
+const allowedOrigins = new Set(["https://frontend.com"]);
+
+function verifyOrigin(req, res, next) {
+  const origin = req.get("Origin");
+  if (!origin || !allowedOrigins.has(origin)) {
+    return res.status(403).json({ message: "Forbidden origin" });
+  }
+  next();
+}
+
+app.post("/change-email", verifyOrigin, requireAuth, updateEmail);
+```
+
+This is a simplified, **fail-closed** example. Apply a consistent policy to all state-changing routes, account for trusted proxies and browser/header behavior, and use session-bound CSRF tokens where appropriate. The origin allowlist here is a **server-side rejection rule**, not merely a CORS response header.
+
+### Cross-origin is not the same as cross-site
+
+| Frontend | Backend | Relationship |
+| --- | --- | --- |
+| `https://app.example.com` | `https://api.example.com` | Cross-origin, **same-site** |
+| `https://frontend.com` | `https://backend.com` | Cross-origin, **cross-site** |
+| `http://localhost:3000` | `http://localhost:5000` | Cross-origin, **same-site** |
+
+For same-site subdomains, `SameSite=Lax` or `Strict` may work even though CORS and `credentials: "include"` are still required for cross-origin `fetch`. Do not switch to `SameSite=None` simply because ports or subdomains differ.
+
+### Remember the responsibilities
+
+- **CORS:** controls cross-origin response access and preflight permissions.
+- **SameSite:** determines cookie eligibility in cross-site contexts.
+- **HttpOnly:** prevents JavaScript from reading the cookie, but not from causing requests that include it.
+- **CSRF tokens / server-side Origin checks:** defend state-changing endpoints from unwanted cross-site requests.
+
+**Interview takeaway:** `cors({ origin: ["https://frontend.com"], credentials: true })` does **not** mean the browser only sends cookies for requests initiated by that origin. Cookie policy and destination determine whether a cookie is sent; the backend must independently enforce CSRF protections.
